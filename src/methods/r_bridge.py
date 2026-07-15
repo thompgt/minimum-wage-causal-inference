@@ -66,6 +66,25 @@ def run_callaway_santanna(panel):
     return run_r_script("callaway_santanna.R", panel[list(required)])
 
 
+def run_synthetic_control(panel, treated_state, treatment_year):
+    """panel: state-year DataFrame with state, year, unemployment_rate, minimum_wage.
+
+    Runs a synthetic control case study for `treated_state`, using its
+    `treatment_year` minimum wage increase as the intervention date.
+    """
+    required = {"state", "year", "unemployment_rate", "minimum_wage"}
+    missing = required - set(panel.columns)
+    if missing:
+        raise ValueError(f"panel is missing required columns: {missing}")
+    if treated_state not in panel["state"].unique():
+        raise ValueError(f"treated_state {treated_state!r} not found in panel")
+    return run_r_script(
+        "synthetic_control.R",
+        panel[list(required)],
+        extra_args=[treated_state, str(treatment_year)],
+    )
+
+
 if __name__ == "__main__":
     from src.data.synthetic import generate_state_year_panel
 
