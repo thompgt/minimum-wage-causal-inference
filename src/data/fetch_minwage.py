@@ -13,7 +13,9 @@ use, then reads from `data/raw/` thereafter. The series runs 1974m5 through
 To use a different source instead, drop your own CSV at
 `data/raw/state_minimum_wage.csv` with columns
 `state, year, month, minimum_wage` and it takes precedence over the
-download.
+download. `federal_minimum_wage` is optional there: any row missing it is
+filled from `FEDERAL_MINIMUM_WAGE_SCHEDULE` below, so a substituted source
+only has to carry state law.
 """
 from pathlib import Path
 
@@ -32,6 +34,51 @@ VZ_MEMBER = "mw_state_monthly.xlsx"
 VZ_LOCAL = RAW_DIR / f"vz_{VZ_VERSION}_{VZ_MEMBER}"
 
 REQUIRED_COLUMNS = {"state", "year", "month", "minimum_wage"}
+
+# Federal floor under the FLSA, as (year, month, day, wage) effective dates.
+# A substituted CSV only has to supply state wages; treatment is defined
+# against the federal floor, so we fill it from the statute rather than
+# leaving it missing (a missing floor makes `above_federal` undefined and
+# the panel builder raise).
+FEDERAL_MINIMUM_WAGE_SCHEDULE = [
+    (1974, 5, 1, 2.00),
+    (1975, 1, 1, 2.10),
+    (1976, 1, 1, 2.30),
+    (1978, 1, 1, 2.65),
+    (1979, 1, 1, 2.90),
+    (1980, 1, 1, 3.10),
+    (1981, 1, 1, 3.35),
+    (1990, 4, 1, 3.80),
+    (1991, 4, 1, 4.25),
+    (1996, 10, 1, 4.75),
+    (1997, 9, 1, 5.15),
+    (2007, 7, 24, 5.85),
+    (2008, 7, 24, 6.55),
+    (2009, 7, 24, 7.25),
+]
+
+
+def federal_minimum_wage(year, month):
+    """The federal floor in force on the first day of a given year-month.
+
+    Vectorized over pandas Series; also accepts scalars. Anchoring on the
+    first of the month means the three FLSA amendments that took effect on
+    July 24 (2007-2009) count from August, which is how the Vaghul-Zipperer
+    series dates them too — so a substituted CSV and the default download
+    define treatment identically.
+
+    Year-months before the schedule starts return NaN.
+    """
+    year = pd.Series(year).astype(int).reset_index(drop=True)
+    month = pd.Series(month).astype(int).reset_index(drop=True)
+    stamp = year * 12 + month
+
+    out = pd.Series(float("nan"), index=stamp.index)
+    for eff_year, eff_month, eff_day, wage in FEDERAL_MINIMUM_WAGE_SCHEDULE:
+        # An increase mid-month first binds a whole month the month after.
+        effective = eff_year * 12 + eff_month + (1 if eff_day > 1 else 0)
+        out = out.mask(stamp >= effective, wage)
+    return out
 
 
 def download_vz_minimum_wage(dest=None, force=False):
@@ -96,8 +143,26 @@ def _load_user_csv(raw_path):
     df["year"] = df["year"].astype(int)
     df["month"] = df["month"].astype(int)
     df["minimum_wage"] = df["minimum_wage"].astype(float)
-    if "federal_minimum_wage" not in df.columns:
-        df["federal_minimum_wage"] = pd.NA
+    df = df.sort_values(["state", "year", "month"]).reset_index(drop=True)
+    if "federal_minimum_wage" in df.columns:
+        df["federal_minimum_wage"] = pd.to_numeric(
+            df["federal_minimum_wage"], errors="coerce"
+        )
+        supplied = df["federal_minimum_wage"]
+        df["federal_minimum_wage"] = supplied.fillna(
+            federal_minimum_wage(df["year"], df["month"])
+        )
+    else:
+        df["federal_minimum_wage"] = federal_minimum_wage(df["year"], df["month"])
+    if df["federal_minimum_wage"].isna().any():
+        first = df[df["federal_minimum_wage"].isna()].iloc[0]
+        raise ValueError(
+            f"{raw_path} covers {int(first['year'])}m{int(first['month'])}, which "
+            "predates the FLSA schedule in FEDERAL_MINIMUM_WAGE_SCHEDULE. Supply "
+            "a federal_minimum_wage column for those rows."
+        )
+    # The wage that actually binds is the higher of the two.
+    df["minimum_wage"] = df[["minimum_wage", "federal_minimum_wage"]].max(axis=1)
     cols = ["state", "year", "month", "minimum_wage", "federal_minimum_wage"]
     return df[cols].sort_values(["state", "year", "month"]).reset_index(drop=True)
 
