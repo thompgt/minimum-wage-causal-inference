@@ -164,8 +164,9 @@ def fig_method_comparison(panel, is_synthetic=False):
         plt.Line2D([], [], color=C_ACCENT, marker="o", linestyle="",
                    label=f"Semi-elasticity x {factor:.3f} (converted)"),
     ]
+    # Below the axes: every in-axes corner collides with one CI or another.
     ax.legend(handles=handles, frameon=False, fontsize=8.5, labelcolor=INK,
-              loc="lower right")
+              loc="upper center", bbox_to_anchor=(0.5, -0.16), ncol=2)
 
     if is_synthetic:
         truth = TRUE_EFFECT * factor
