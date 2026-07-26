@@ -21,7 +21,9 @@ from src.data.loader import load_state_year_panel
 from src.data.synthetic import TRUE_EFFECT
 from src.diagnostics.parallel_trends import placebo_test
 from src.diagnostics.robustness import leave_one_state_out
-from src.methods.border_discontinuity import border_pair_diffs, estimate_border_effect
+from src.methods.border_discontinuity import US_STATE_BORDER_PAIRS
+from src.methods.callaway_santanna import estimate_att_gt
+from src.methods.comparison import build_comparison
 from src.methods.event_study import estimate_event_study
 from src.methods.twfe_did import estimate_twfe
 
@@ -128,78 +130,136 @@ def fig_event_study(panel):
 
 
 def fig_method_comparison(panel, is_synthetic=False):
-    """Point estimate + 95% CI for each estimator that runs without R."""
-    rows = []
+    """Every estimator's ATT on one scale, with 95% CIs.
 
-    twfe = estimate_twfe(panel)
-    ci = twfe.conf_int()
-    rows.append({
-        "method": "TWFE DiD",
-        "coef": twfe.params["log_minimum_wage"],
-        "lo": ci.loc["log_minimum_wage", "lower"],
-        "hi": ci.loc["log_minimum_wage", "upper"],
-    })
+    Scale conversion lives in src/methods/comparison.py: the semi-elasticity
+    estimators are multiplied by the average treated log wage gap so they
+    answer the same question as the binary-treatment ones.
+    """
+    df = build_comparison(
+        panel, border_pairs=US_STATE_BORDER_PAIRS, n_boot=500
+    ).dropna(subset=["estimate"])
+    factor = df.attrs.get("log_wage_gap", float("nan"))
 
-    # Post-adoption average of the event-study coefficients.
-    _, es = estimate_event_study(panel)
-    post = es[es["rel_time"] >= 0]
-    rows.append({
-        "method": "Event study\n(post-period avg)",
-        "coef": post["coef"].mean(),
-        "lo": post["ci_lower"].mean(),
-        "hi": post["ci_upper"].mean(),
-    })
-
-    # Border discontinuity. Synthetic states have no geography, so pair them
-    # arbitrarily (as src/methods/border_discontinuity.py's own demo does).
-    states = sorted(panel["state"].unique())
-    pairs = list(zip(states[::2], states[1::2]))
-    diffs = border_pair_diffs(panel, pairs, treatment="log_minimum_wage")
-    border = estimate_border_effect(diffs)
-    b_ci = border.conf_int()
-    rows.append({
-        "method": "Border\ndiscontinuity",
-        "coef": border.params["treatment_diff"],
-        "lo": b_ci.loc["treatment_diff", 0],
-        "hi": b_ci.loc["treatment_diff", 1],
-    })
-
-    df = pd.DataFrame(rows)
-    fig, ax = plt.subplots(figsize=(8, 4.2))
+    fig, ax = plt.subplots(figsize=(8.5, 4.6))
     y = np.arange(len(df))[::-1]
     ax.axvline(0, color="#c3c2b7", linewidth=1)
-    ax.errorbar(df["coef"], y,
-                xerr=[df["coef"] - df["lo"], df["hi"] - df["coef"]],
-                fmt="o", markersize=8, color=C_TREATED, ecolor=C_TREATED,
-                elinewidth=2, capsize=4, markeredgecolor="#fcfcfb",
-                markeredgewidth=2)
-    for yi, (c, m) in zip(y, zip(df["coef"], df["method"])):
-        ax.annotate(f"{c:+.3f}", (c, yi), color=INK, fontsize=9,
-                    xytext=(0, 12), textcoords="offset points", ha="center")
+    colors = [C_ACCENT if s == "converted" else C_TREATED for s in df["scale"]]
+    for yi, row, color in zip(y, df.itertuples(), colors):
+        ax.errorbar(row.estimate, yi,
+                    xerr=[[row.estimate - row.ci_lower], [row.ci_upper - row.estimate]],
+                    fmt="o", markersize=8, color=color, ecolor=color,
+                    elinewidth=2, capsize=4, markeredgecolor="#fcfcfb",
+                    markeredgewidth=2)
+        ax.annotate(f"{row.estimate:+.2f}", (row.estimate, yi), color=INK,
+                    fontsize=9, xytext=(0, 12), textcoords="offset points",
+                    ha="center")
     ax.set_yticks(y)
     ax.set_yticklabels(df["method"])
     ax.set_ylim(-0.6, len(df) - 0.4)
 
-    # Keep the informative estimates readable: clip the axis to the tighter
-    # CIs and label any interval that runs off scale rather than hiding it.
-    inner = pd.concat([df["lo"].abs(), df["hi"].abs()]).nsmallest(4).max()
-    limit = max(inner * 1.35, 0.3)
-    ax.set_xlim(-limit, limit)
-    for yi, r in zip(y, df.itertuples()):
-        if r.lo < -limit or r.hi > limit:
-            ax.annotate(f"95% CI [{r.lo:+.2f}, {r.hi:+.2f}] — off scale",
-                        (0, yi), color=MUTED, fontsize=8, ha="center",
-                        xytext=(0, -18), textcoords="offset points")
+    handles = [
+        plt.Line2D([], [], color=C_TREATED, marker="o", linestyle="",
+                   label="Binary treatment (native scale)"),
+        plt.Line2D([], [], color=C_ACCENT, marker="o", linestyle="",
+                   label=f"Semi-elasticity x {factor:.3f} (converted)"),
+    ]
+    ax.legend(handles=handles, frameon=False, fontsize=8.5, labelcolor=INK,
+              loc="lower right")
+
     if is_synthetic:
-        ax.axvline(TRUE_EFFECT, color=C_ACCENT, linewidth=2, linestyle="--",
-                   label=f"Synthetic ground truth ({TRUE_EFFECT})")
-        ax.legend(frameon=False, fontsize=9, labelcolor=INK, loc="lower right")
-    _style(ax, "Estimated effect by identification strategy (95% CI)\n"
-               "Coefficient on log(minimum wage), same panel for every method",
+        truth = TRUE_EFFECT * factor
+        ax.axvline(truth, color=C_CONTROL, linewidth=2, linestyle="--")
+        ax.annotate(f"ground truth ({truth:+.2f})", (truth, len(df) - 0.5),
+                    color=C_CONTROL, fontsize=8, ha="center",
+                    xytext=(0, 4), textcoords="offset points")
+
+    _style(ax, "Effect of state minimum wage policy on unemployment, by method\n"
+               "Average treatment effect on the treated, 95% CI, same panel throughout",
            "Effect on unemployment rate (pp)", "")
     ax.grid(axis="y", visible=False)
     _save(fig, "method_comparison.png")
     return df
+
+
+def fig_cs_event_study(panel, n_boot=500):
+    """Callaway-Sant'Anna dynamic aggregation, with a sup-t uniform band."""
+    res = estimate_att_gt(panel, aggregations=("dynamic",), n_boot=n_boot)
+    d = res["dynamic"]
+    # Restrict to event times supported by more than one cohort; the tails
+    # rest on a single state and say more about that state than the policy.
+    d = d[(d["n_cohorts"] > 1) & d["event_time"].between(-8, 12)]
+
+    fig, ax = plt.subplots(figsize=(8.5, 4.6))
+    ax.axhline(0, color="#c3c2b7", linewidth=1)
+    ax.axvline(-0.5, color=MUTED, linewidth=1, linestyle="--")
+    ax.fill_between(d["event_time"], d["band_lower"], d["band_upper"],
+                    color=C_TREATED, alpha=0.12, linewidth=0)
+    pre = d[d["event_time"] < 0]
+    post = d[d["event_time"] >= 0]
+    for part, color in ((pre, MUTED), (post, C_TREATED)):
+        ax.errorbar(part["event_time"], part["att"],
+                    yerr=[part["att"] - part["ci_lower"],
+                          part["ci_upper"] - part["att"]],
+                    fmt="o", markersize=6, color=color, ecolor=color,
+                    elinewidth=1.8, capsize=3, markeredgecolor="#fcfcfb",
+                    markeredgewidth=1.5)
+    ax.annotate("pre-adoption\n(placebo)", (pre["event_time"].min(), 0),
+                color=MUTED, fontsize=8, xytext=(0, -34),
+                textcoords="offset points", ha="left")
+    _style(ax, "Callaway-Sant'Anna event study\n"
+               "ATT by years since adoption; pointwise 95% CI, shaded sup-t "
+               "uniform band",
+           "Years relative to adoption", "ATT on unemployment rate (pp)")
+    _save(fig, "cs_event_study.png")
+    return d
+
+
+def fig_synthetic_control(panel, treated="MO", n_placebos=None):
+    """Classic Abadie pair: actual vs synthetic path, and the placebo gaps."""
+    from src.methods.synthetic_control import estimate_synthetic_control
+
+    never = panel[panel["adoption_year"].isna()]["state"].unique().tolist()
+    adoption = int(panel.loc[panel["state"] == treated, "adoption_year"].iloc[0])
+    fit = estimate_synthetic_control(panel, treated, adoption, donors=never)
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4.4))
+
+    paths = fit["paths"]
+    actual = paths[paths["type"] == "actual"]
+    synth = paths[paths["type"] == "synthetic"]
+    ax1.plot(actual["year"], actual["unemployment_rate"], color=C_TREATED,
+             linewidth=2.2, label=treated)
+    ax1.plot(synth["year"], synth["unemployment_rate"], color=C_CONTROL,
+             linewidth=2.2, linestyle="--", label=f"synthetic {treated}")
+    ax1.axvline(adoption, color=MUTED, linewidth=1, linestyle=":")
+    ax1.legend(frameon=False, fontsize=9, labelcolor=INK)
+    _style(ax1, f"{treated}: actual vs. synthetic counterfactual\n"
+                f"pre-adoption RMSPE {fit['pre_rmspe']:.3f}",
+           "Year", "Unemployment rate (%)")
+
+    # Placebo gaps: refit treating each donor as if it had adopted.
+    ax2.axhline(0, color="#c3c2b7", linewidth=1)
+    for donor in never:
+        others = [d for d in never if d != donor]
+        try:
+            pl = estimate_synthetic_control(panel, donor, adoption, donors=others)
+        except ValueError:
+            continue
+        ax2.plot(pl["gaps"].index, pl["gaps"].to_numpy(), color=MUTED,
+                 linewidth=0.9, alpha=0.45)
+    ax2.plot(fit["gaps"].index, fit["gaps"].to_numpy(), color=C_TREATED,
+             linewidth=2.4)
+    ax2.axvline(adoption, color=MUTED, linewidth=1, linestyle=":")
+    ax2.annotate(treated, (fit["gaps"].index[-1], fit["gaps"].iloc[-1]),
+                 color=C_TREATED, fontsize=9, xytext=(4, 0),
+                 textcoords="offset points", va="center")
+    _style(ax2, f"Placebo gaps: {treated} vs. {len(never)} never-treated donors\n"
+                "each grey line is a donor treated as if it had adopted",
+           "Year", "Gap vs. synthetic (pp)")
+
+    _save(fig, "synthetic_control.png")
+    return fit
 
 
 def fig_placebo(panel, n_placebos=60):
@@ -251,6 +311,8 @@ def main():
     fig_treated_vs_control(panel)
     fig_parallel_trends(panel)
     fig_event_study(panel)
+    fig_cs_event_study(panel)
+    fig_synthetic_control(panel)
     fig_method_comparison(panel, is_synthetic)
     fig_placebo(panel)
     fig_leave_one_out(panel)

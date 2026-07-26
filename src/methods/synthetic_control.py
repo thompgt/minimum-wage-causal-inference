@@ -260,6 +260,91 @@ def placebo_test(
     return results, p_value
 
 
+def aggregate_synthetic_control(
+    panel,
+    outcome="unemployment_rate",
+    unit="state",
+    time="year",
+    cohort="adoption_year",
+    covariates=None,
+    min_pre=3,
+    min_post=2,
+    n_boot=1000,
+    alpha=0.05,
+    seed=0,
+):
+    """Average synthetic control effect across every staggered adopter.
+
+    Fits a separate synthetic control for each treated unit against the
+    never-treated donor pool, then averages the mean post-treatment gap
+    across units. This is what makes synthetic control comparable to the
+    panel-wide estimators: a single case study estimates one state's ATT,
+    not the average one.
+
+    Inference resamples treated units with replacement, matching the
+    unit-level clustering used elsewhere. Returns a dict with `att`, `se`,
+    `ci_lower`, `ci_upper`, and a per-unit `effects` table.
+    """
+    never = panel[panel[cohort].isna()][unit].unique().tolist()
+    if not never:
+        raise ValueError("no never-treated units to serve as donors")
+
+    adopters = (
+        panel[panel[cohort].notna()]
+        .drop_duplicates(subset=[unit])[[unit, cohort]]
+        .itertuples(index=False)
+    )
+    times = np.sort(panel[time].unique())
+
+    rows = []
+    for name, adoption in adopters:
+        adoption = float(adoption)
+        if (times < adoption).sum() < min_pre or (times >= adoption).sum() < min_post:
+            continue
+        try:
+            fit = estimate_synthetic_control(
+                panel, name, adoption, outcome, unit, time, covariates, donors=never
+            )
+        except ValueError:
+            continue
+        post = fit["gaps"][fit["gaps"].index >= adoption]
+        rows.append({
+            unit: name,
+            cohort: int(adoption),
+            "effect": float(post.mean()),
+            "pre_rmspe": fit["pre_rmspe"],
+            "n_post": int(len(post)),
+        })
+
+    effects = pd.DataFrame(rows)
+    if effects.empty:
+        raise ValueError(
+            f"no treated unit has >= {min_pre} pre and >= {min_post} post periods"
+        )
+
+    values = effects["effect"].to_numpy()
+    rng = np.random.default_rng(seed)
+    draws = rng.choice(values, size=(n_boot, len(values)), replace=True).mean(axis=1)
+    se = float(draws.std(ddof=1))
+    att = float(values.mean())
+    z = _normal_quantile(1 - alpha / 2)
+    return {
+        "att": att,
+        "se": se,
+        "ci_lower": att - z * se,
+        "ci_upper": att + z * se,
+        "effects": effects.sort_values("effect").reset_index(drop=True),
+        "n_units": len(values),
+        "n_donors": len(never),
+    }
+
+
+def _normal_quantile(p):
+    from scipy.stats import norm
+
+    return float(norm.ppf(p))
+
+
 def run_synthetic_control(panel, treated_state, treatment_year, **kwargs):
     """Backwards-compatible flat output matching the old R script's CSV."""
     required = {"state", "year", "unemployment_rate"}
