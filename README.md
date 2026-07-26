@@ -27,7 +27,7 @@ panel's baked-in ground truth.*
 flowchart TB
     subgraph sources["Data sources"]
         BLS["BLS LAUS API<br/>(keyless v1; v2 if BLS_API_KEY set)"]
-        MW["State minimum wage CSV<br/>data/raw/state_minimum_wage.csv"]
+        MW["Vaghul-Zipperer state<br/>minimum wage series<br/>(auto-downloaded)"]
     end
 
     subgraph ingest["src/data — Python"]
@@ -105,11 +105,22 @@ flowchart TB
 
 ### Walkthrough
 
-Two sources feed the panel: monthly state unemployment rates from the BLS
-LAUS API (`fetch_bls.py`, needs a key) and a state minimum wage history CSV
-you supply (`fetch_minwage.py`). `build_panel.py` merges them, validates for
-duplicate/missing state-year-month rows, and writes both a state-month and a
-state-year parquet into `data/processed/`.
+Two sources feed the panel, and both fetch themselves: monthly state
+unemployment rates from the BLS LAUS API (`fetch_bls.py`, keyless) and the
+Vaghul-Zipperer historical state minimum wage series (`fetch_minwage.py`,
+downloaded and cached from its GitHub release). `build_panel.py` merges
+them, validates for duplicate/missing state-year-month rows, derives the
+adoption cohorts, and writes both a state-month and a state-year parquet
+into `data/processed/`.
+
+Treatment is defined as a state's minimum wage binding above the federal
+floor, and is modelled as **absorbing** — once a state legislates above the
+federal minimum it stays treated, even in years a federal increase catches
+up to it. That is what staggered-adoption estimators require; the
+alternative would credit federal policy changes to state cohorts. The
+resulting `adoption_year` splits the 51 jurisdictions into 14 never-treated,
+11 always-treated (already above federal in 2000, so no clean pre-period),
+and 26 staggered adopters between 2002 and 2021.
 
 Everything downstream goes through **one** entry point, `src/data/loader.py`,
 which returns `(panel, is_synthetic)`: the real processed panel if it exists,
@@ -253,18 +264,19 @@ seeded synthetic panel (`src/data/synthetic.py`) with a known ground-truth
 effect, so you can explore the pipeline before wiring up BLS/minimum-wage
 data.
 
-**With real data**:
-1. Set `BLS_API_KEY` (see above) and add a state minimum wage history CSV
-   to `data/raw/state_minimum_wage.csv` (see `src/data/fetch_minwage.py`
-   docstring for the required columns and where to find the data).
-2. Build the panel:
-   ```
-   python -m src.data.fetch_bls
-   python -m src.data.build_panel
-   ```
-   `src/data/loader.py` (used by the app, notebooks, and figure script)
-   automatically prefers `data/processed/panel_state_year.parquet` once it
-   exists.
+**With real data** — no key or manual download needed:
+```
+python -m src.data.fetch_bls      # BLS LAUS, 51 states, 2000-2022
+python -m src.data.build_panel    # merge, validate, derive adoption cohorts
+```
+`src/data/loader.py` (used by the app, notebooks, and figure script)
+automatically prefers `data/processed/panel_state_year.parquet` once it
+exists. Both fetchers cache to `data/raw/`, so re-running is offline and
+free.
+
+To substitute a different minimum wage source, drop a CSV with columns
+`state, year, month, minimum_wage` at `data/raw/state_minimum_wage.csv` and
+it takes precedence over the download.
 
 Then:
 - Explore the pipeline and each method in `notebooks/` (run in order,
