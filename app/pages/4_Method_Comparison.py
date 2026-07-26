@@ -1,3 +1,13 @@
+import sys
+from pathlib import Path
+
+# Streamlit puts this script's own directory on sys.path, not the project
+# root, so `import src` fails without this when the app is launched the
+# documented way (`streamlit run app/Home.py`).
+_ROOT = next(p for p in Path(__file__).resolve().parents if (p / "src").is_dir())
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
 import plotly.graph_objects as go
 import streamlit as st
 
@@ -85,7 +95,12 @@ fig.add_vline(x=0, line_dash="dot", line_color="gray")
 fig.update_layout(
     title="Estimated ATT of a state minimum wage above the federal floor",
     xaxis_title="Percentage points of unemployment",
-    yaxis=dict(autorange="reversed"),
+    # Traces are added per scale, which would otherwise group the methods by
+    # colour and reorder them away from the table above.
+    yaxis=dict(
+        categoryorder="array",
+        categoryarray=list(results["method"])[::-1],
+    ),
     legend=dict(orientation="h", yanchor="bottom", y=-0.35),
 )
 st.plotly_chart(fig, width="stretch")

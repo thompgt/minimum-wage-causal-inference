@@ -1,3 +1,13 @@
+import sys
+from pathlib import Path
+
+# Streamlit puts this script's own directory on sys.path, not the project
+# root, so `import src` fails without this when the app is launched the
+# documented way (`streamlit run app/Home.py`).
+_ROOT = next(p for p in Path(__file__).resolve().parents if (p / "src").is_dir())
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
 import plotly.express as px
 import streamlit as st
 
