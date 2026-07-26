@@ -26,7 +26,7 @@ panel's baked-in ground truth.*
 ```mermaid
 flowchart TB
     subgraph sources["Data sources"]
-        BLS["BLS LAUS API<br/>(needs BLS_API_KEY)"]
+        BLS["BLS LAUS API<br/>(keyless v1; v2 if BLS_API_KEY set)"]
         MW["State minimum wage CSV<br/>data/raw/state_minimum_wage.csv"]
     end
 
@@ -240,8 +240,11 @@ estimators are skipped and everything else still runs.
 
 ### API key
 
-BLS API pulls need a free key from https://www.bls.gov/developers/. Copy
-`.env.example` to `.env` and set `BLS_API_KEY`.
+Not required. `fetch_bls.py` uses the keyless BLS v1 endpoint by default,
+which is enough to build the full 51-state panel. Setting `BLS_API_KEY`
+(free, from https://www.bls.gov/developers/) in a `.env` file switches it to
+the v2 endpoint, which has looser per-request limits and a higher daily
+quota — useful if you widen the year range.
 
 ## Usage
 

@@ -1,7 +1,13 @@
 """Pull state-level unemployment rate (LAUS) series from the BLS public API.
 
-Requires a free API key from https://www.bls.gov/developers/, set as
-BLS_API_KEY in a .env file at the project root.
+No API key is required. The public v1 endpoint is keyless and is enough to
+build the full 51-state panel (see LIMITS below). If you do set BLS_API_KEY
+(free, from https://www.bls.gov/developers/) this module automatically uses
+the v2 endpoint instead, which has looser per-request limits and a much
+higher daily quota.
+
+Raw JSON responses are cached under data/raw/bls_laus_raw/, so re-running is
+free and does not re-spend your daily request quota.
 """
 import json
 import os
@@ -14,10 +20,18 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-BLS_API_URL = "https://api.bls.gov/publicAPI/v2/timeseries/data/"
 RAW_DIR = Path(__file__).resolve().parents[2] / "data" / "raw"
 
-# LAUS series ID format: LASST{state_fips}0000000000003 = unemployment rate
+# Per-request limits differ by API version. Exceeding them makes the API
+# return a soft error rather than truncating, so we batch to fit.
+LIMITS = {
+    # version: (url, max series per request, max years per request)
+    1: ("https://api.bls.gov/publicAPI/v1/timeseries/data/", 25, 10),
+    2: ("https://api.bls.gov/publicAPI/v2/timeseries/data/", 50, 20),
+}
+
+# LAUS series ID format: LASST{state_fips}0000000000003 = unemployment rate,
+# seasonally adjusted, statewide.
 STATE_FIPS = {
     "AL": "01", "AK": "02", "AZ": "04", "AR": "05", "CA": "06", "CO": "08",
     "CT": "09", "DE": "10", "FL": "12", "GA": "13", "HI": "15", "ID": "16",
@@ -30,57 +44,76 @@ STATE_FIPS = {
     "WI": "55", "WY": "56", "DC": "11",
 }
 
+DEFAULT_START_YEAR = 2000
+DEFAULT_END_YEAR = 2022  # minimum wage source (Vaghul-Zipperer) ends 2022m12
+
 
 def _series_id(state_abbr):
     return f"LASST{STATE_FIPS[state_abbr]}0000000000003"
 
 
-def fetch_unemployment(start_year, end_year, states=None, api_key=None):
+def _spans(start_year, end_year, max_years):
+    """Year ranges no longer than `max_years`, covering [start_year, end_year]."""
+    return [
+        (s, min(s + max_years - 1, end_year))
+        for s in range(start_year, end_year + 1, max_years)
+    ]
+
+
+def fetch_unemployment(
+    start_year=DEFAULT_START_YEAR,
+    end_year=DEFAULT_END_YEAR,
+    states=None,
+    api_key=None,
+    cache_dir=None,
+):
     """Fetch monthly state unemployment rates for [start_year, end_year].
 
-    Returns a long DataFrame: state, year, period, value.
-    Caches raw JSON responses per batch to data/raw/bls_laus_raw/.
+    Returns a long DataFrame: state, year, month, unemployment_rate.
+
+    `api_key` defaults to BLS_API_KEY from the environment; if neither is
+    set, the keyless v1 endpoint is used.
     """
-    api_key = api_key or os.environ.get("BLS_API_KEY")
-    if not api_key:
-        raise RuntimeError(
-            "BLS_API_KEY not set. Copy .env.example to .env and add your key "
-            "from https://www.bls.gov/developers/."
-        )
+    api_key = api_key or os.environ.get("BLS_API_KEY") or None
+    version = 2 if api_key else 1
+    url, max_series, max_years = LIMITS[version]
+
     states = states or list(STATE_FIPS.keys())
-    cache_dir = RAW_DIR / "bls_laus_raw"
+    cache_dir = Path(cache_dir) if cache_dir else RAW_DIR / "bls_laus_raw"
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     series_ids = [_series_id(s) for s in states]
     id_to_state = {_series_id(s): s for s in states}
 
     frames = []
-    # BLS API allows up to 50 series and a 20-year span per request with a key.
-    for batch_start in range(0, len(series_ids), 50):
-        batch = series_ids[batch_start:batch_start + 50]
-        for span_start in range(start_year, end_year + 1, 20):
-            span_end = min(span_start + 19, end_year)
-            cache_file = cache_dir / f"batch{batch_start}_{span_start}_{span_end}.json"
+    for batch_start in range(0, len(series_ids), max_series):
+        batch = series_ids[batch_start:batch_start + max_series]
+        for span_start, span_end in _spans(start_year, end_year, max_years):
+            cache_file = (
+                cache_dir / f"v{version}_batch{batch_start}_{span_start}_{span_end}.json"
+            )
             if cache_file.exists():
                 payload = json.loads(cache_file.read_text())
             else:
-                resp = requests.post(
-                    BLS_API_URL,
-                    json={
-                        "seriesid": batch,
-                        "startyear": str(span_start),
-                        "endyear": str(span_end),
-                        "registrationkey": api_key,
-                    },
-                    timeout=30,
-                )
+                body = {
+                    "seriesid": batch,
+                    "startyear": str(span_start),
+                    "endyear": str(span_end),
+                }
+                if api_key:
+                    body["registrationkey"] = api_key
+                resp = requests.post(url, json=body, timeout=60)
                 resp.raise_for_status()
                 payload = resp.json()
+                if payload.get("status") != "REQUEST_SUCCEEDED":
+                    raise RuntimeError(
+                        f"BLS API v{version} error: {payload.get('message')}"
+                    )
                 cache_file.write_text(json.dumps(payload))
                 time.sleep(0.5)  # be polite to the API
 
             if payload.get("status") != "REQUEST_SUCCEEDED":
-                raise RuntimeError(f"BLS API error: {payload.get('message')}")
+                raise RuntimeError(f"BLS API v{version} error: {payload.get('message')}")
 
             for series in payload["Results"]["series"]:
                 state = id_to_state[series["seriesID"]]
@@ -88,21 +121,35 @@ def fetch_unemployment(start_year, end_year, states=None, api_key=None):
                     frames.append({
                         "state": state,
                         "year": int(obs["year"]),
-                        "period": obs["period"],  # e.g. M01..M12
+                        "period": obs["period"],  # M01..M12 (M13 = annual avg)
                         "value": float(obs["value"]),
                     })
 
     df = pd.DataFrame(frames)
+    if df.empty:
+        raise RuntimeError("BLS returned no observations")
     df = df[df["period"].str.startswith("M") & (df["period"] != "M13")]
     df["month"] = df["period"].str[1:].astype(int)
     df = df.rename(columns={"value": "unemployment_rate"})
+    df = df.drop_duplicates(subset=["state", "year", "month"])
     return df[["state", "year", "month", "unemployment_rate"]].sort_values(
         ["state", "year", "month"]
     ).reset_index(drop=True)
 
 
-if __name__ == "__main__":
-    out = fetch_unemployment(start_year=2000, end_year=2024)
+def main():
+    key = os.environ.get("BLS_API_KEY")
+    print(
+        f"Fetching LAUS {DEFAULT_START_YEAR}-{DEFAULT_END_YEAR} for "
+        f"{len(STATE_FIPS)} states via API "
+        f"{'v2 (key found)' if key else 'v1 (keyless)'}..."
+    )
+    out = fetch_unemployment()
+    RAW_DIR.mkdir(parents=True, exist_ok=True)
     out_path = RAW_DIR / "bls_unemployment.parquet"
     out.to_parquet(out_path, index=False)
-    print(f"Wrote {len(out)} rows to {out_path}")
+    print(f"Wrote {len(out)} rows ({out['state'].nunique()} states) to {out_path}")
+
+
+if __name__ == "__main__":
+    main()
