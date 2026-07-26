@@ -1,12 +1,9 @@
-import shutil
-
-import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
 from src.data.loader import load_state_year_panel
-from src.methods.border_discontinuity import border_pair_diffs, estimate_border_effect
-from src.methods.twfe_did import estimate_twfe
+from src.methods.border_discontinuity import US_STATE_BORDER_PAIRS
+from src.methods.comparison import build_comparison
 
 st.title("Method Comparison")
 st.markdown(
@@ -18,63 +15,82 @@ st.markdown(
 
 panel, is_synthetic = load_state_year_panel()
 if is_synthetic:
-    st.info("Using synthetic demo data.")
+    st.info("Using synthetic demo data — no real panel found in data/processed/.")
 
-rows = []
 
-try:
-    twfe_result = estimate_twfe(panel)
-    coef = twfe_result.params["log_minimum_wage"]
-    ci = twfe_result.conf_int()
-    rows.append({
-        "method": "TWFE DiD",
-        "coef": coef,
-        "ci_lower": ci.loc["log_minimum_wage", "lower"],
-        "ci_upper": ci.loc["log_minimum_wage", "upper"],
-    })
-except Exception as e:
-    st.warning(f"TWFE failed: {e}")
+@st.cache_data(show_spinner=False)
+def _comparison(panel, use_border_pairs, n_boot):
+    pairs = US_STATE_BORDER_PAIRS if use_border_pairs else None
+    return build_comparison(panel, border_pairs=pairs, n_boot=n_boot)
 
-try:
-    states = sorted(panel["state"].unique())
-    demo_pairs = list(zip(states[::2], states[1::2]))
-    diffs = border_pair_diffs(panel, demo_pairs, treatment="minimum_wage")
-    border_model = estimate_border_effect(diffs)
-    ci = border_model.conf_int()
-    rows.append({
-        "method": "Border discontinuity",
-        "coef": border_model.params["treatment_diff"],
-        "ci_lower": ci.loc["treatment_diff", 0],
-        "ci_upper": ci.loc["treatment_diff", 1],
-    })
-except Exception as e:
-    st.warning(f"Border discontinuity failed: {e}")
 
-if shutil.which("Rscript") is None:
-    st.info(
-        "Callaway-Sant'Anna and synthetic control estimates need R "
-        "installed (`Rscript install.R`) — omitted from this comparison."
-    )
+n_boot = st.slider(
+    "Bootstrap draws", min_value=100, max_value=1000, value=500, step=100,
+    help="Used by Callaway-Sant'Anna and the synthetic control average. "
+         "Higher is smoother but slower.",
+)
+use_border_pairs = st.checkbox(
+    "Include the border-discontinuity design", value=True,
+    help=f"Restricts to the {len(US_STATE_BORDER_PAIRS)} contiguous state "
+         "pairs in US_STATE_BORDER_PAIRS.",
+)
 
-comparison = pd.DataFrame(rows)
-if comparison.empty:
+with st.spinner("Running every estimator on the panel..."):
+    comparison = _comparison(panel, use_border_pairs, n_boot)
+
+factor = comparison.attrs.get("log_wage_gap", float("nan"))
+st.markdown(
+    "Every estimate below is the **average treatment effect on the treated, "
+    "in percentage points of unemployment** — the effect of the minimum wage "
+    "policy treated states actually enacted. The estimators do not natively "
+    "answer that same question: TWFE and the border design regress on log "
+    f"minimum wage, so their semi-elasticities are multiplied by {factor:.3f}, "
+    "the average log gap between the state and federal minimum among treated "
+    "state-years. The `scale` column records which rows rest on that step."
+)
+
+failed = comparison[comparison["scale"] == "failed"]
+for row in failed.itertuples():
+    st.warning(f"{row.method.replace(chr(10), ' ')} failed: {row.note}")
+
+results = comparison[comparison["scale"] != "failed"].copy()
+if results.empty:
     st.error("No estimators produced a result.")
-else:
-    st.dataframe(comparison, width='stretch')
+    st.stop()
 
-    fig = go.Figure()
+results["method"] = results["method"].str.replace("\n", " ", regex=False)
+st.dataframe(
+    results[["method", "estimate", "ci_lower", "ci_upper", "scale", "note"]],
+    width="stretch",
+    hide_index=True,
+)
+
+fig = go.Figure()
+for scale, color in (("native", "#3b6ea5"), ("converted", "#c4703a")):
+    subset = results[results["scale"] == scale]
+    if subset.empty:
+        continue
     fig.add_trace(go.Scatter(
-        x=comparison["method"], y=comparison["coef"], mode="markers",
-        error_y=dict(
+        x=subset["estimate"], y=subset["method"], mode="markers",
+        name="Binary treatment (native scale)" if scale == "native"
+        else f"Semi-elasticity x {factor:.3f} (converted)",
+        error_x=dict(
             type="data",
-            array=comparison["ci_upper"] - comparison["coef"],
-            arrayminus=comparison["coef"] - comparison["ci_lower"],
+            array=subset["ci_upper"] - subset["estimate"],
+            arrayminus=subset["estimate"] - subset["ci_lower"],
         ),
-        marker=dict(size=12),
+        marker=dict(size=12, color=color),
     ))
-    fig.add_hline(y=0, line_dash="dot", line_color="gray")
-    fig.update_layout(
-        title="Estimated effect of log(minimum wage) on unemployment rate, by method",
-        yaxis_title="Coefficient",
-    )
-    st.plotly_chart(fig, width='stretch')
+fig.add_vline(x=0, line_dash="dot", line_color="gray")
+fig.update_layout(
+    title="Estimated ATT of a state minimum wage above the federal floor",
+    xaxis_title="Percentage points of unemployment",
+    yaxis=dict(autorange="reversed"),
+    legend=dict(orientation="h", yanchor="bottom", y=-0.35),
+)
+st.plotly_chart(fig, width="stretch")
+
+st.caption(
+    "Intervals that straddle zero mean the design cannot rule out no effect. "
+    "Read the spread across methods, not any single point estimate."
+)
