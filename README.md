@@ -5,6 +5,15 @@ unemployment, using multiple causal inference methods so the results'
 sensitivity to method choice is visible rather than hidden behind a single
 number.
 
+## Tech Stack
+
+![Python](https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white)
+![Difference-in-Differences](https://img.shields.io/badge/Difference--in--Differences-0B7261?style=for-the-badge)
+![Event Study](https://img.shields.io/badge/Event%20Study-7A4FBF?style=for-the-badge)
+![Callaway-Sant'Anna DiD](https://img.shields.io/badge/Callaway--Sant'Anna%20DiD-1F6FB2?style=for-the-badge)
+![Synthetic Control](https://img.shields.io/badge/Synthetic%20Control-B5651D?style=for-the-badge)
+![Border Discontinuity](https://img.shields.io/badge/Border%20Discontinuity-8A2B2B?style=for-the-badge)
+
 ![Method comparison](docs/images/method_comparison.png)
 
 *Every estimator run on the same panel: monthly BLS unemployment crossed
