@@ -26,7 +26,7 @@ from src.methods.border_discontinuity import border_pair_diffs, estimate_border_
 from src.methods.callaway_santanna import estimate_att_gt
 from src.methods.event_study import average_post_effect, estimate_event_study
 from src.methods.synthetic_control import aggregate_synthetic_control
-from src.methods.twfe_did import estimate_twfe
+from src.methods.twfe_did import BINARY_TREATMENT, estimate_twfe, estimate_twfe_binary
 
 
 def treated_log_wage_gap(panel, treatment="minimum_wage", federal="federal_minimum_wage"):
@@ -75,7 +75,7 @@ def build_comparison(
         twfe = estimate_twfe(panel)
         ci = twfe.conf_int()
         add(
-            "TWFE DiD",
+            "TWFE DiD\n(log minimum wage)",
             twfe.params["log_minimum_wage"] * factor,
             ci.loc["log_minimum_wage", "lower"] * factor,
             ci.loc["log_minimum_wage", "upper"] * factor,
@@ -83,7 +83,28 @@ def build_comparison(
             f"semi-elasticity x {factor:.3f} mean treated log wage gap",
         )
     except Exception as exc:  # noqa: BLE001 - surfaced in the output table
-        add("TWFE DiD", np.nan, np.nan, np.nan, "failed", str(exc))
+        add("TWFE DiD\n(log minimum wage)", np.nan, np.nan, np.nan, "failed",
+            str(exc))
+
+    # --- TWFE on the binary treatment: already in pp, no conversion -----
+    # The like-for-like row. Its gap from Callaway-Sant'Anna is the
+    # staggered-timing bias the Goodman-Bacon decomposition describes;
+    # comparing the continuous row against CS mixes that bias with the
+    # negative-weights problem of a dose-response design and with a units
+    # conversion.
+    try:
+        binary = estimate_twfe_binary(panel)
+        b_ci = binary.conf_int()
+        add(
+            "TWFE DiD\n(binary treatment)",
+            binary.params[BINARY_TREATMENT],
+            b_ci.loc[BINARY_TREATMENT, "lower"],
+            b_ci.loc[BINARY_TREATMENT, "upper"],
+            "native",
+            "absorbing above-federal indicator; comparable to CS without conversion",
+        )
+    except Exception as exc:  # noqa: BLE001
+        add("TWFE DiD\n(binary treatment)", np.nan, np.nan, np.nan, "failed", str(exc))
 
     # --- Event study: binary treatment, already in pp -------------------
     try:
