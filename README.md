@@ -26,7 +26,8 @@ any of these numbers.*
 
 All in Python; there is no R dependency and no optional estimator.
 
-- Two-way fixed effects DiD (`src/methods/twfe_did.py`)
+- Two-way fixed effects DiD, continuous and binary treatment, optionally
+  labour-force weighted (`src/methods/twfe_did.py`)
 - Event-study / pre-trend check (`src/methods/event_study.py`)
 - Callaway-Sant'Anna staggered-adoption DiD (`src/methods/callaway_santanna.py`)
 - Abadie synthetic control, per-state and averaged over adopters
@@ -125,9 +126,24 @@ floor, and is modelled as **absorbing** — once a state legislates above the
 federal minimum it stays treated, even in years a federal increase catches
 up to it. That is what staggered-adoption estimators require; the
 alternative would credit federal policy changes to state cohorts. The
-resulting `adoption_year` splits the 51 jurisdictions into 14 never-treated,
+resulting `adoption_year` splits the 51 jurisdictions into 15 never-treated,
 11 always-treated (already above federal in 2000, so no clean pre-period),
-and 26 staggered adopters between 2002 and 2021.
+and 25 staggered adopters between 2002 and 2021.
+
+Collapsing months to years forces a second choice, and the annual wage and
+the annual treatment flag have to make the same one. Both are read at
+**year end**: `above_federal` is derived from the annual wage columns, so no
+row can assert that a state is a minimum-wage state while recording its
+minimum wage as the federal minimum. The two conventions disagree in 23
+state-years — Kentucky was above the floor for part of 2007 only, and under
+`any`-month plus absorbing treatment counted as an adopter for the next 16
+years. `build_state_year_panel(..., treatment_convention="any-month")`
+restores the other reading for sensitivity work.
+
+The BLS pull also fetches the civilian labour force level. No estimator
+uses it by default — every design here weights states equally — but it is
+what makes `estimate_twfe(panel, weights="labor_force")` possible, so the
+per-state/per-worker choice can be tested instead of merely inherited.
 
 `fetch_minwage.py` also carries the statutory FLSA federal schedule, so a
 substituted minimum wage source only has to supply state law — the federal
@@ -150,19 +166,28 @@ subprocess bridge and the pages that used to disable themselves when
 `Rscript` was missing.
 
 `src/methods/comparison.py` is what makes the headline figure honest. The
-estimators do not natively answer the same question: TWFE and the border
-design regress on *log* minimum wage, so their coefficients are
-semi-elasticities, while Callaway-Sant'Anna, the event study, and synthetic
-control estimate a *binary* treatment effect in percentage points. Plotting
-those on a shared axis without conversion compares numbers that mean
-different things. `comparison.py` multiplies the semi-elasticities by the
-average log gap between the state and federal minimum among treated
-state-years (0.174 for this panel, a ~19% average premium over federal), and
-records in a `scale` column which rows rest on that step.
+estimators do not natively answer the same question: the continuous TWFE
+and the border design regress on *log* minimum wage, so their coefficients
+are semi-elasticities, while Callaway-Sant'Anna, the event study, synthetic
+control and the binary TWFE estimate a *binary* treatment effect in
+percentage points. Plotting those on a shared axis without conversion
+compares numbers that mean different things. `comparison.py` multiplies the
+semi-elasticities by the average log gap between the state and federal
+minimum among treated state-years (0.178 for this panel, a ~19% average
+premium over federal), and records in a `scale` column which rows rest on
+that step — `converted` for the rescaled rows, `native` for the ones already
+in percentage points, `conditional` for the synthetic control's
+conditional-on-fitted-effects interval, and `failed` for an estimator that
+raised, which becomes a row carrying its error rather than taking the table
+down.
 
-`src/diagnostics` consumes estimator output rather than data: pre-trend
-screening and placebo (randomized-timing) tests in `parallel_trends.py`,
-cluster bootstrap and leave-one-state-out sensitivity in `robustness.py`.
+`src/diagnostics` consumes estimator output rather than data: a joint Wald
+test over the pre-adoption leads plus the per-coefficient screen and
+placebo (randomized-timing) tests in `parallel_trends.py`, cluster
+bootstrap and leave-one-state-out sensitivity in `robustness.py`. Every
+routine that refits the model many times counts the refits that *failed*
+and raises past a threshold, because a bootstrap distribution over an
+unknown number of survivors is not a bootstrap distribution.
 
 Three surfaces consume all of the above: the Streamlit app for interactive
 exploration, the numbered notebooks for the methodology narrative, and
@@ -179,50 +204,85 @@ exploration, the numbered notebooks for the methodology narrative, and
 | `app/` | Streamlit UI: `Home.py` plus four pages (Data Explorer, DiD Estimator, Synthetic Control, Method Comparison) |
 | `notebooks/` | Methodology walkthroughs `01`–`05`, meant to be read in order |
 | `scripts/` | `make_figures.py` regenerates every analytical figure in this README; `capture_app.py` retakes the app screenshots |
-| `data/` | `raw/` (API pulls, supplied CSVs) → `interim/` → `processed/` (analysis panels). Gitignored except for `.gitkeep` |
-| `tests/` | pytest suite over the panel builder, the minimum wage loader, the estimators, and the diagnostics |
+| `data/` | `raw/` (API pulls, supplied CSVs) → `interim/` → `processed/` (analysis panels). Gitignored except for `.gitkeep` and the committed `manifest.json` vintage record |
+| `tests/` | pytest suite over the panel builder, the minimum wage loader, the panel loader, the estimators, the comparison table, the data manifest, and the diagnostics |
 
 ## Findings
 
 Every estimate below is the average treatment effect on the treated, in
 percentage points of unemployment — the effect of the minimum wage policy
 treated states actually enacted, not of a hypothetical one-log-point rise.
+The unit of analysis is the **state-year, weighted equally**: see the third
+bullet below for what changes when it is not.
+
+Reproduced by `python -m src.methods.comparison`. The data vintage these
+numbers came from is recorded in [`data/manifest.json`](data/manifest.json)
+and printed by `python -m src.data.manifest`; LAUS is revised, so the same
+code run a year from now will not produce quite the same table.
 
 | Method | ATT (pp) | 95% CI | Scale |
 | --- | --- | --- | --- |
-| TWFE DiD | +0.10 | [−0.11, +0.31] | converted |
-| Event study (post-period avg) | +0.25 | [−0.22, +0.72] | native |
-| Callaway-Sant'Anna | +0.52 | [+0.11, +0.93] | native |
-| Synthetic control (avg over adopters) | +0.57 | [+0.30, +0.86] | native |
-| Border discontinuity | +0.37 | [+0.11, +0.62] | converted |
+| TWFE DiD (log minimum wage) | +0.10 | [−0.11, +0.32] | converted |
+| TWFE DiD (binary treatment) | +0.36 | [+0.01, +0.70] | native |
+| Event study (post-period avg) | +0.47 | [+0.08, +0.86] | native |
+| Callaway-Sant'Anna | +0.56 | [+0.16, +0.96] | native |
+| Synthetic control (avg over adopters) | +0.64 | [+0.32, +0.95] | conditional |
+| Border discontinuity | −0.01 | [−0.18, +0.15] | converted |
 
-Three of the five intervals exclude zero, and every point estimate is
-positive — higher unemployment in states that raised their minimum wage.
-**That is not a finding this repo can support**, for reasons worth stating
-plainly:
+Four of the six intervals exclude zero, and five of the six point estimates
+are positive — higher unemployment in states that raised their minimum
+wage. **That is not a finding this repo can support**, for reasons worth
+stating plainly:
 
 - **The placebo test does not clear.** Reassigning treatment timing at
-  random reproduces an effect at least this large 38% of the time. An
-  estimate that randomly-timed treatment matches more than a third of the
-  time is not evidence of a policy effect; it is evidence that state-year
-  unemployment is autocorrelated enough to manufacture one.
+  random reproduces an effect at least this large in 38% of 60 draws (none
+  of which failed to fit). An estimate that randomly-timed treatment
+  matches more than a third of the time is not evidence of a policy effect;
+  it is evidence that state-year unemployment is autocorrelated enough to
+  manufacture one.
+- **The synthetic control's interval and its own permutation test
+  disagree.** [+0.32, +0.95] is conditional on the fitted per-unit effects:
+  it describes the spread of 21 point estimates, treating each as if it
+  were data. Abadie permutation inference — re-running each adopter's fit
+  pretending a donor was treated, which is the inference this design
+  actually supports — gives a combined p of 0.28, and **not one** of the 21
+  adopters is individually significant at 0.05. The `scale` column reads
+  `conditional` for that row for this reason.
+- **Weighting reverses the significance.** Every estimator here weights
+  state-years equally, so Wyoming counts as much as California. Weight the
+  binary TWFE by labour force instead and it falls from +0.36 (p = 0.04)
+  to +0.14 (p = 0.53). Whatever the equal-weighted specification picks up
+  is concentrated in small states, and "per state" versus "per worker" is a
+  choice this repo makes rather than a fact it discovers.
+- **The border design finds nothing.** Once identification comes from
+  within-pair variation over time — pair and period fixed effects, all 109
+  contiguous pairs, two-way clustered on both states — the estimate is
+  −0.01 [−0.18, +0.15]. The +0.37 this README used to report came from a
+  pooled regression on a hand-picked 28-pair subset concentrated in CA/OR/NV
+  and NY/NJ/PA, which is to say a sample selected on treatment and a slope
+  free to absorb permanent level differences between pairs.
 - **Adoption is endogenous.** States raise their minimum wage when their
   labour markets are strong and the politics allow it, and the states that
-  never do are systematically different — the 14 never-treated are entirely
-  Southern and Mountain/Plains states (AL, GA, ID, IN, KS, LA, MS, ND, OK,
-  SC, TN, TX, UT, WY), which is a regional control group, not a random one.
-  Parallel trends is doing enormous work here, and no diagnostic in this
-  repo tests the selection mechanism itself.
-- **The spread is the point.** TWFE and Callaway-Sant'Anna differ by a
-  factor of five on the same panel. Under the usual reading that gap
-  localises staggered-timing bias — but it equally localises how much of
-  the answer is a modelling choice.
+  never do are systematically different — the 15 never-treated are entirely
+  Southern and Mountain/Plains states (AL, GA, ID, IN, KS, KY, LA, MS, ND,
+  OK, SC, TN, TX, UT, WY), which is a regional control group, not a random
+  one. Parallel trends is doing enormous work here, and no diagnostic in
+  this repo tests the selection mechanism itself.
+- **The spread is the point.** The two TWFE rows differ from each other by
+  more than either differs from Callaway-Sant'Anna. Only the binary row is
+  a like-for-like comparison against CS; the gap between them (+0.36 vs
+  +0.56) is the staggered-timing bias the Goodman-Bacon decomposition
+  describes. The continuous row's distance from CS mixes that bias with the
+  negative-weighting problem of a dose-response design and with a units
+  conversion, so it localises how much of the answer is a modelling choice.
 
-What the panel does support: the pre-trend screen passes (none of the five
-pre-adoption event-study coefficients has a CI excluding zero), and no
-single state drives the result — the leave-one-out refits range from +0.35
-to +0.81 in semi-elasticity terms without a sign flip. Those are necessary
-conditions, not sufficient ones.
+What the panel does support: the formal parallel-trends test does not
+reject (joint Wald over the four pre-adoption event-study leads,
+χ²(4) = 3.70, p = 0.45 — non-rejection, which is not the same as evidence
+the assumption holds), and no single state drives the result — the
+leave-one-state-out refits range from +0.35 (dropping NV) to +0.82
+(dropping RI) around a full-sample +0.58 in semi-elasticity terms, without
+a sign flip. Those are necessary conditions, not sufficient ones.
 
 Treat this repo as a demonstration that five identification strategies can
 be implemented, reconciled onto one scale, and made to disagree in
@@ -262,10 +322,16 @@ cross-state mean.
 ![Event study](docs/images/event_study.png)
 
 Leads and lags from `src/methods/event_study.py`, TWFE with state-clustered
-standard errors, `t = -1` omitted as the reference period. The pre-period
-coefficients are flat and insignificant — the formal parallel-trends check
-(`src/diagnostics/parallel_trends.pretrend_joint_test`) — while the
-post-period drifts upward with intervals that mostly still cover zero.
+standard errors, `t = -1` omitted as the reference period. Always-treated
+states are dropped (they have no pre-period) and the 15 never-treated
+states are kept as controls at `rel_time = NA`, so the leads and lags are
+identified against states that never adopt rather than against each other.
+The pre-period coefficients are flat, and the formal check
+(`parallel_trends.pretrend_joint_test`, a joint Wald test over all four
+leads using the fitted clustered covariance) does not reject: χ²(4) = 3.70,
+p = 0.45. The post-period drifts upward; its average is a linear contrast
+over the six post coefficients, not an average of per-coefficient interval
+endpoints, which would ignore their covariance.
 
 ### Callaway-Sant'Anna event study
 
@@ -284,17 +350,22 @@ and wide enough to include zero throughout.
 One state's counterfactual built from a weighted blend of never-treated
 donors (left), and Abadie permutation inference (right): the same procedure
 re-run pretending each donor was treated. The treated state's gap has to
-stand out against those grey lines to mean anything.
+stand out against those grey lines to mean anything — and across the 21
+adopters that clear the pre-fit RMSPE gate, not one does at the 0.05 level.
+That is the inference this design supports, and it is the reason the
+headline synthetic-control interval is labelled `conditional`.
 
 ### Placebo test
 
 ![Placebo distribution](docs/images/placebo_distribution.png)
 
-`placebo_test` re-runs TWFE 60 times with treatment timing randomly
-reassigned across states. The actual estimate sits inside the bulk of the
-placebo distribution, not its tail — 38% of placebo draws are at least as
-large in magnitude. This is the figure that should temper everything else
-in this README.
+`placebo_test` re-runs TWFE 60 times with each state handed another
+state's entire minimum wage history — whole donor paths, so each remains
+internally coherent while losing its link to that state's labour market.
+The actual estimate sits inside the bulk of the placebo distribution, not
+its tail: 38% of 60 draws are at least as large in magnitude, over a
+denominator of *attempted* draws (none failed here). This is the figure
+that should temper everything else in this README.
 
 ### Leave-one-state-out
 
@@ -302,8 +373,10 @@ in this README.
 
 The TWFE coefficient refit with each state dropped in turn
 (`src/diagnostics/robustness.leave_one_state_out`). The estimate ranges from
-+0.35 (dropping NV) to +0.81 (dropping RI) without crossing zero, so the
-result isn't one state's story.
++0.35 (dropping NV) to +0.82 (dropping RI) around a full-sample +0.58,
+without crossing zero, so the result isn't one state's story. Refits that
+fail are counted rather than dropped; past a 10% failure rate the routine
+raises instead of returning a thinner sample that looks complete.
 
 ## The app
 
@@ -320,7 +393,7 @@ streamlit run app/Home.py
 ![Method Comparison](docs/images/app_method_comparison.png)
 
 Every page runs against whichever panel `loader.py` finds, and says which
-one it is. The Method Comparison page runs all five estimators through
+one it is. The Method Comparison page runs all six specifications through
 `comparison.py`; the Synthetic Control page fits a case study on demand and
 will optionally run permutation inference over the donor pool.
 
@@ -332,7 +405,11 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-That's the whole setup. No R, and no API key — `fetch_bls.py` uses the
+That's the whole setup. Python 3.11–3.13; every dependency is bounded on
+both sides in `requirements.txt` and `pyproject.toml`, and CI runs the
+suite on all three versions plus `ruff`.
+
+No R, and no API key — `fetch_bls.py` uses the
 keyless BLS v1 endpoint, which is enough to build the full 51-state panel.
 Setting `BLS_API_KEY` (free, from https://www.bls.gov/developers/) in a
 `.env` file switches it to the v2 endpoint, which has looser per-request
@@ -345,9 +422,16 @@ Build the real panel — no key or manual download needed:
 ```
 python -m src.data.fetch_bls      # BLS LAUS, 51 states, 2000-2022
 python -m src.data.build_panel    # merge, validate, derive adoption cohorts
+python -m src.data.manifest       # print the recorded data vintage
 ```
 
-Both fetchers cache to `data/raw/`, so re-running is offline and free.
+Both fetchers cache to `data/raw/`, so re-running is offline and free. Each
+also records the vintage in `data/manifest.json` — SHA-256 and mtime per
+raw input, the BLS API version and measures pulled, and which minimum wage
+source was actually used. That file is committed even though `data/` is
+not, because it is the only way to say which BLS revision produced a given
+number; `python -m src.data.manifest` also reports whether the files on
+disk still match it.
 `src/data/loader.py` (used by the app, notebooks, and figure script)
 prefers `data/processed/panel_state_year.parquet` once it exists, and falls
 back to the seeded synthetic panel until then — so everything below runs
@@ -408,9 +492,18 @@ Then:
 - **The border design uses state-level, not county-level, data.** The
   identifying appeal of Dube-Lester-Reich is comparing adjacent *counties*
   across a state line, where local labour markets are genuinely shared.
-  `US_STATE_BORDER_PAIRS` compares whole states that happen to touch, which
-  is a much weaker version of the argument. County-level LAUS data exists
-  and would make this design mean what its name implies.
+  `US_STATE_BORDER_PAIRS` is now the complete enumeration of all 109
+  contiguous jurisdiction pairs rather than a hand-picked subset, and the
+  specification carries pair and period fixed effects with two-way
+  clustering — but it still compares whole states that happen to touch,
+  which is a much weaker version of the argument. County-level LAUS data
+  exists and would make this design mean what its name implies.
+- **The weighted specification is only wired into TWFE.** `weights=` exists
+  on `estimate_twfe`/`estimate_twfe_binary`, so the per-state versus
+  per-worker question can be asked of the workhorse design. Callaway-
+  Sant'Anna, the event study, synthetic control and the border design are
+  all still equal-weighted, so the headline table cannot be reproduced
+  per-worker end to end.
 - **Always-treated states are dropped, not modelled.** The 11 jurisdictions
   already above the federal floor in 2000 have no pre-period and fall out of
   every staggered-adoption estimator. They include the largest
