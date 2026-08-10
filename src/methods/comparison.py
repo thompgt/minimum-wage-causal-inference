@@ -24,7 +24,7 @@ import pandas as pd
 
 from src.methods.border_discontinuity import border_pair_diffs, estimate_border_effect
 from src.methods.callaway_santanna import estimate_att_gt
-from src.methods.event_study import estimate_event_study
+from src.methods.event_study import average_post_effect, estimate_event_study
 from src.methods.synthetic_control import aggregate_synthetic_control
 from src.methods.twfe_did import estimate_twfe
 
@@ -87,15 +87,17 @@ def build_comparison(
 
     # --- Event study: binary treatment, already in pp -------------------
     try:
-        _, es = estimate_event_study(panel)
-        post = es[es["rel_time"] >= 0]
+        es_result, es = estimate_event_study(panel)
+        # A linear contrast, not the average of the per-coefficient CI
+        # endpoints: averaging endpoints ignores the covariance between the
+        # post coefficients and yields an interval with no coverage guarantee.
+        post = average_post_effect(es_result, es)
         add(
             "Event study\n(post-period avg)",
-            post["coef"].mean(),
-            post["ci_lower"].mean(),
-            post["ci_upper"].mean(),
+            post["estimate"], post["ci_lower"], post["ci_upper"],
             "native",
-            "mean of post-adoption event-time coefficients",
+            f"contrast over {post['n_coefficients']} post coefficients, "
+            f"{es.attrs['n_never_treated']} never-treated controls",
         )
     except Exception as exc:  # noqa: BLE001
         add("Event study\n(post-period avg)", np.nan, np.nan, np.nan, "failed", str(exc))
