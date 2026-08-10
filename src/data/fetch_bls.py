@@ -1,4 +1,4 @@
-"""Pull state-level unemployment rate (LAUS) series from the BLS public API.
+"""Pull state-level LAUS series (unemployment rate, labour force) from BLS.
 
 No API key is required. The public v1 endpoint is keyless and is enough to
 build the full 51-state panel (see LIMITS below). If you do set BLS_API_KEY
@@ -8,6 +8,12 @@ higher daily quota.
 
 Raw JSON responses are cached under data/raw/bls_laus_raw/, so re-running is
 free and does not re-spend your daily request quota.
+
+Two measures are pulled. The unemployment rate is the outcome. The labour
+force level is not used by any estimator by default -- every design in this
+repo weights states equally -- but it is what makes population weighting
+*possible*, so that choice can be tested rather than merely inherited. See
+`src/methods/twfe_did.estimate_twfe` on what the two weightings mean.
 """
 import json
 import os
@@ -30,8 +36,14 @@ LIMITS = {
     2: ("https://api.bls.gov/publicAPI/v2/timeseries/data/", 50, 20),
 }
 
-# LAUS series ID format: LASST{state_fips}0000000000003 = unemployment rate,
-# seasonally adjusted, statewide.
+# LAUS series ID format: LASST{state_fips}00000000000{measure}, seasonally
+# adjusted, statewide. Measure 03 is the unemployment rate, 06 the civilian
+# labour force level.
+LAUS_MEASURES = {
+    "unemployment_rate": "03",
+    "labor_force": "06",
+}
+
 STATE_FIPS = {
     "AL": "01", "AK": "02", "AZ": "04", "AR": "05", "CA": "06", "CO": "08",
     "CT": "09", "DE": "10", "FL": "12", "GA": "13", "HI": "15", "ID": "16",
@@ -48,8 +60,8 @@ DEFAULT_START_YEAR = 2000
 DEFAULT_END_YEAR = 2022  # minimum wage source (Vaghul-Zipperer) ends 2022m12
 
 
-def _series_id(state_abbr):
-    return f"LASST{STATE_FIPS[state_abbr]}0000000000003"
+def _series_id(state_abbr, measure="03"):
+    return f"LASST{STATE_FIPS[state_abbr]}00000000000{measure}"
 
 
 def _spans(start_year, end_year, max_years):
@@ -60,20 +72,28 @@ def _spans(start_year, end_year, max_years):
     ]
 
 
-def fetch_unemployment(
+def fetch_laus(
+    measure="unemployment_rate",
     start_year=DEFAULT_START_YEAR,
     end_year=DEFAULT_END_YEAR,
     states=None,
     api_key=None,
     cache_dir=None,
 ):
-    """Fetch monthly state unemployment rates for [start_year, end_year].
+    """Fetch one monthly LAUS measure for [start_year, end_year].
 
-    Returns a long DataFrame: state, year, month, unemployment_rate.
+    `measure` is a key of `LAUS_MEASURES`. Returns a long DataFrame:
+    state, year, month, <measure>.
 
     `api_key` defaults to BLS_API_KEY from the environment; if neither is
     set, the keyless v1 endpoint is used.
     """
+    if measure not in LAUS_MEASURES:
+        raise ValueError(
+            f"unknown LAUS measure {measure!r}; expected one of "
+            f"{sorted(LAUS_MEASURES)}"
+        )
+    measure_code = LAUS_MEASURES[measure]
     api_key = api_key or os.environ.get("BLS_API_KEY") or None
     version = 2 if api_key else 1
     url, max_series, max_years = LIMITS[version]
@@ -82,16 +102,20 @@ def fetch_unemployment(
     cache_dir = Path(cache_dir) if cache_dir else RAW_DIR / "bls_laus_raw"
     cache_dir.mkdir(parents=True, exist_ok=True)
 
-    series_ids = [_series_id(s) for s in states]
-    id_to_state = {_series_id(s): s for s in states}
+    series_ids = [_series_id(s, measure_code) for s in states]
+    id_to_state = {_series_id(s, measure_code): s for s in states}
 
     frames = []
     for batch_start in range(0, len(series_ids), max_series):
         batch = series_ids[batch_start:batch_start + max_series]
         for span_start, span_end in _spans(start_year, end_year, max_years):
-            cache_file = (
-                cache_dir / f"v{version}_batch{batch_start}_{span_start}_{span_end}.json"
-            )
+            stem = f"v{version}_batch{batch_start}_{span_start}_{span_end}"
+            cache_file = cache_dir / f"{stem}_m{measure_code}.json"
+            # Caches written before this module handled more than one measure
+            # have no measure suffix and are all unemployment rate.
+            legacy = cache_dir / f"{stem}.json"
+            if not cache_file.exists() and measure_code == "03" and legacy.exists():
+                cache_file = legacy
             if cache_file.exists():
                 payload = json.loads(cache_file.read_text())
             else:
@@ -130,11 +154,16 @@ def fetch_unemployment(
         raise RuntimeError("BLS returned no observations")
     df = df[df["period"].str.startswith("M") & (df["period"] != "M13")]
     df["month"] = df["period"].str[1:].astype(int)
-    df = df.rename(columns={"value": "unemployment_rate"})
+    df = df.rename(columns={"value": measure})
     df = df.drop_duplicates(subset=["state", "year", "month"])
-    return df[["state", "year", "month", "unemployment_rate"]].sort_values(
+    return df[["state", "year", "month", measure]].sort_values(
         ["state", "year", "month"]
     ).reset_index(drop=True)
+
+
+def fetch_unemployment(**kwargs):
+    """Backwards-compatible alias for the unemployment rate measure."""
+    return fetch_laus("unemployment_rate", **kwargs)
 
 
 def main():
@@ -144,7 +173,16 @@ def main():
         f"{len(STATE_FIPS)} states via API "
         f"{'v2 (key found)' if key else 'v1 (keyless)'}..."
     )
-    out = fetch_unemployment()
+    out = fetch_laus("unemployment_rate")
+    # Labour force is the weight, not an outcome. If BLS declines it, the
+    # panel is still complete -- every estimator defaults to equal weights.
+    try:
+        labor = fetch_laus("labor_force")
+        out = out.merge(labor, on=["state", "year", "month"], how="left")
+        print(f"Merged labour force levels ({out['labor_force'].notna().sum()} rows)")
+    except (requests.RequestException, RuntimeError) as exc:
+        print(f"Labour force fetch failed, continuing unweighted: {exc}")
+
     RAW_DIR.mkdir(parents=True, exist_ok=True)
     out_path = RAW_DIR / "bls_unemployment.parquet"
     out.to_parquet(out_path, index=False)

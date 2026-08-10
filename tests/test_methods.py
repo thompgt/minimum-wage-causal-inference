@@ -1,3 +1,4 @@
+import numpy as np
 import pytest
 
 from src.data.synthetic import generate_state_year_panel
@@ -6,7 +7,7 @@ from src.diagnostics.parallel_trends import (
     pretrend_joint_test,
 )
 from src.methods.event_study import estimate_event_study
-from src.methods.twfe_did import estimate_twfe, summarize_twfe
+from src.methods.twfe_did import LABOR_FORCE, estimate_twfe, summarize_twfe
 
 
 @pytest.fixture(scope="module")
@@ -27,6 +28,58 @@ def test_twfe_summary_has_expected_columns(panel):
     summary = summarize_twfe(result)
     assert set(summary.columns) == {"coef", "std_error", "pvalue", "ci_lower", "ci_upper"}
     assert "log_minimum_wage" in summary.index
+
+
+# --- unit of analysis: per state, or per worker? --------------------------
+
+@pytest.fixture
+def weighted_panel(panel):
+    """The panel plus a labour force column that varies a lot across states.
+
+    Real state labour forces span two orders of magnitude (WY ~290k, CA
+    ~19m), which is exactly why the weighting choice is not cosmetic.
+    """
+    df = panel.copy()
+    states = sorted(df["state"].unique())
+    sizes = {s: 10.0 ** (5 + 2 * i / max(len(states) - 1, 1))
+             for i, s in enumerate(states)}
+    df[LABOR_FORCE] = df["state"].map(sizes)
+    return df
+
+
+def test_weights_change_the_estimate(weighted_panel):
+    """If they did not, the weighting choice would not need stating."""
+    equal = estimate_twfe(weighted_panel).params["log_minimum_wage"]
+    weighted = estimate_twfe(weighted_panel, weights=LABOR_FORCE)
+    assert not np.isclose(equal, weighted.params["log_minimum_wage"])
+
+
+def test_weighting_is_recorded_on_the_result(weighted_panel):
+    assert estimate_twfe(weighted_panel).weighting == "equal"
+    assert estimate_twfe(weighted_panel, weights=LABOR_FORCE).weighting == LABOR_FORCE
+
+
+def test_missing_weight_column_is_a_readable_error(panel):
+    with pytest.raises(ValueError, match="no 'labor_force' column"):
+        estimate_twfe(panel, weights=LABOR_FORCE)
+
+
+def test_non_positive_weights_are_rejected(weighted_panel):
+    """A zero weight silently drops a state-year; say so instead."""
+    df = weighted_panel.copy()
+    df.loc[df.index[0], LABOR_FORCE] = 0.0
+    with pytest.raises(ValueError, match="missing or non-positive"):
+        estimate_twfe(df, weights=LABOR_FORCE)
+
+
+def test_constant_weights_match_the_unweighted_fit(weighted_panel):
+    """Weighting every state-year the same is the equal-weight estimator."""
+    df = weighted_panel.copy()
+    df[LABOR_FORCE] = 1_000.0
+    assert np.isclose(
+        estimate_twfe(df).params["log_minimum_wage"],
+        estimate_twfe(df, weights=LABOR_FORCE).params["log_minimum_wage"],
+    )
 
 
 def test_event_study_omits_reference_period_at_zero(panel):

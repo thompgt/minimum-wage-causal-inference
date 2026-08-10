@@ -107,15 +107,21 @@ def build_state_year_panel(state_month_panel, treatment_convention="year-end"):
             f"expected one of {TREATMENT_CONVENTIONS}"
         )
 
+    aggregations = dict(
+        unemployment_rate=("unemployment_rate", "mean"),
+        minimum_wage=("minimum_wage", "last"),  # year-end minimum wage
+        federal_minimum_wage=("federal_minimum_wage", "last"),
+        above_federal_any_month=("above_federal", "any"),
+    )
+    # Optional: only present if the BLS pull included the labour force
+    # measure. Nothing downstream requires it -- see `estimate_twfe`.
+    if "labor_force" in state_month_panel.columns:
+        aggregations["labor_force"] = ("labor_force", "mean")
+
     yearly = (
         state_month_panel.sort_values(["state", "year", "month"])
         .groupby(["state", "year"])
-        .agg(
-            unemployment_rate=("unemployment_rate", "mean"),
-            minimum_wage=("minimum_wage", "last"),  # year-end minimum wage
-            federal_minimum_wage=("federal_minimum_wage", "last"),
-            above_federal_any_month=("above_federal", "any"),
-        )
+        .agg(**aggregations)
         .reset_index()
     )
     if treatment_convention == "year-end":
