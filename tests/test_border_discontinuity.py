@@ -3,8 +3,8 @@ import pandas as pd
 import pytest
 
 from src.methods.border_discontinuity import (
-    US_STATE_BORDER_PAIRS,
     _STATE_ADJACENCY,
+    US_STATE_BORDER_PAIRS,
     _enumerate_border_pairs,
     border_pair_diffs,
     estimate_border_effect,
