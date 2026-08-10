@@ -136,13 +136,15 @@ def build_comparison(
             diffs = border_pair_diffs(panel, border_pairs, treatment="log_minimum_wage")
             border = estimate_border_effect(diffs)
             b_ci = border.conf_int()
+            spec = border.border_spec
             add(
                 "Border\ndiscontinuity",
                 border.params["treatment_diff"] * factor,
                 b_ci.loc["treatment_diff", 0] * factor,
                 b_ci.loc["treatment_diff", 1] * factor,
                 "converted",
-                f"{len(border_pairs)} contiguous state pairs",
+                f"{spec['n_pairs']} contiguous pairs, pair + period FE, "
+                "two-way clustered on both states",
             )
         except Exception as exc:  # noqa: BLE001
             add("Border\ndiscontinuity", np.nan, np.nan, np.nan, "failed", str(exc))
