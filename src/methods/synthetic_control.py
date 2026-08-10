@@ -260,6 +260,28 @@ def placebo_test(
     return results, p_value
 
 
+#: Default pre-fit quality gate: drop an adopter whose pre-treatment RMSPE
+#: exceeds this multiple of the median adopter's. A synthetic control that
+#: does not track its unit before treatment has no counterfactual to
+#: difference against, and its "effect" is fit error.
+DEFAULT_MAX_PRE_RMSPE_RATIO = 2.0
+
+
+def _fisher_combine(p_values):
+    """Fisher's method: combine independent p-values into one chi-square test.
+
+    The per-unit Abadie p-values are discrete and share a donor pool, so
+    this is an approximation rather than an exact test — reported with its
+    inputs so a reader can see what it rests on.
+    """
+    from scipy.stats import chi2
+
+    p = np.clip(np.asarray(p_values, dtype=float), 1e-12, 1.0)
+    stat = float(-2.0 * np.log(p).sum())
+    df = 2 * len(p)
+    return {"statistic": stat, "df": df, "p_value": float(chi2.sf(stat, df))}
+
+
 def aggregate_synthetic_control(
     panel,
     outcome="unemployment_rate",
@@ -272,18 +294,39 @@ def aggregate_synthetic_control(
     n_boot=1000,
     alpha=0.05,
     seed=0,
+    max_pre_rmspe_ratio=DEFAULT_MAX_PRE_RMSPE_RATIO,
+    permutation_inference=True,
 ):
     """Average synthetic control effect across every staggered adopter.
 
     Fits a separate synthetic control for each treated unit against the
     never-treated donor pool, then averages the mean post-treatment gap
-    across units. This is what makes synthetic control comparable to the
-    panel-wide estimators: a single case study estimates one state's ATT,
-    not the average one.
+    across the units that pass a pre-fit quality gate. This is what makes
+    synthetic control comparable to the panel-wide estimators: a single
+    case study estimates one state's ATT, not the average one.
 
-    Inference resamples treated units with replacement, matching the
-    unit-level clustering used elsewhere. Returns a dict with `att`, `se`,
-    `ci_lower`, `ci_upper`, and a per-unit `effects` table.
+    **Pre-fit filter.** `pre_rmspe` was previously recorded and never
+    used, so an adopter whose synthetic control tracked it badly
+    contributed to the ATT exactly as much as one it tracked well. Units
+    whose pre-RMSPE exceeds `max_pre_rmspe_ratio` times the median
+    adopter's are now dropped, and the dict reports how many and which.
+    Pass `None` to keep everything.
+
+    **Inference.** Two numbers, and they answer different questions:
+
+    * `ci_lower`/`ci_upper` come from resampling the per-unit point
+      effects with replacement. That treats each unit's effect as a known
+      constant, so it captures dispersion *across* adopters but not the
+      uncertainty *within* each fit, and it ignores the fact that all
+      units draw on the same donor pool. It is a conditional interval,
+      labelled as such in `ci_kind`, and it is narrower than a full
+      accounting would be.
+    * `permutation` runs Abadie inference per unit — refit pretending
+      each donor was treated, rank the unit's post/pre RMSPE ratio in
+      that distribution — and combines the per-unit p-values with
+      Fisher's method. That is the inference this design actually
+      supports. Set `permutation_inference=False` to skip it when speed
+      matters.
     """
     never = panel[panel[cohort].isna()][unit].unique().tolist()
     if not never:
@@ -313,6 +356,8 @@ def aggregate_synthetic_control(
             cohort: int(adoption),
             "effect": float(post.mean()),
             "pre_rmspe": fit["pre_rmspe"],
+            "post_rmspe": fit["post_rmspe"],
+            "rmspe_ratio": fit["rmspe_ratio"],
             "n_post": int(len(post)),
         })
 
@@ -322,20 +367,89 @@ def aggregate_synthetic_control(
             f"no treated unit has >= {min_pre} pre and >= {min_post} post periods"
         )
 
-    values = effects["effect"].to_numpy()
+    # --- pre-fit quality gate -------------------------------------------
+    n_fitted = len(effects)
+    median_pre_rmspe = float(effects["pre_rmspe"].median())
+    if max_pre_rmspe_ratio is None:
+        rmspe_cutoff = None
+        effects["included"] = True
+    else:
+        rmspe_cutoff = max_pre_rmspe_ratio * median_pre_rmspe
+        effects["included"] = effects["pre_rmspe"] <= rmspe_cutoff
+    dropped = effects.loc[~effects["included"], unit].tolist()
+    kept = effects[effects["included"]]
+    if kept.empty:
+        raise ValueError(
+            f"the pre-RMSPE gate dropped all {n_fitted} adopters; "
+            f"cutoff {rmspe_cutoff:.3f}"
+        )
+
+    values = kept["effect"].to_numpy()
+    att = float(values.mean())
+
+    # --- conditional interval across units ------------------------------
     rng = np.random.default_rng(seed)
     draws = rng.choice(values, size=(n_boot, len(values)), replace=True).mean(axis=1)
     se = float(draws.std(ddof=1))
-    att = float(values.mean())
     z = _normal_quantile(1 - alpha / 2)
-    return {
+
+    result = {
         "att": att,
         "se": se,
         "ci_lower": att - z * se,
         "ci_upper": att + z * se,
+        "ci_kind": "conditional-on-fitted-effects",
+        "ci_note": (
+            "resamples the per-unit point effects as if each were known exactly; "
+            "ignores within-fit uncertainty and the shared donor pool, so it is "
+            "narrower than a full accounting. See `permutation` for inference "
+            "this design supports."
+        ),
         "effects": effects.sort_values("effect").reset_index(drop=True),
         "n_units": len(values),
+        "n_fitted": n_fitted,
+        "n_dropped_pre_rmspe": len(dropped),
+        "dropped_units": dropped,
+        "median_pre_rmspe": median_pre_rmspe,
+        "pre_rmspe_cutoff": rmspe_cutoff,
         "n_donors": len(never),
+        "permutation": None,
+    }
+
+    if permutation_inference:
+        result["permutation"] = _permutation_inference(
+            panel, kept, outcome, unit, time, cohort, covariates, never
+        )
+    return result
+
+
+def _permutation_inference(panel, kept, outcome, unit, time, cohort, covariates,
+                           donors):
+    """Per-unit Abadie permutation p-values, combined with Fisher's method."""
+    per_unit = []
+    for row in kept.itertuples(index=False):
+        name = getattr(row, unit)
+        adoption = float(getattr(row, cohort))
+        try:
+            _, p_value = placebo_test(
+                panel, name, adoption, outcome, unit, time, covariates,
+                donors=donors,
+            )
+        except ValueError:
+            continue
+        per_unit.append({unit: name, "p_value": float(p_value)})
+
+    if not per_unit:
+        return None
+    table = pd.DataFrame(per_unit)
+    combined = _fisher_combine(table["p_value"])
+    return {
+        "per_unit": table.sort_values("p_value").reset_index(drop=True),
+        "combined": combined,
+        "n_units": len(table),
+        "n_significant_at_05": int((table["p_value"] <= 0.05).sum()),
+        "method": "Abadie permutation over the never-treated donor pool, "
+                  "per-unit p-values combined with Fisher's method",
     }
 
 

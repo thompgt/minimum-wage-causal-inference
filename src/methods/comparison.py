@@ -120,11 +120,25 @@ def build_comparison(
     if include_synthetic_control:
         try:
             sc = aggregate_synthetic_control(panel, n_boot=n_boot, seed=seed)
+            note = (
+                f"{sc['n_units']} adopters vs {sc['n_donors']} never-treated "
+                f"donors ({sc['n_dropped_pre_rmspe']} dropped on pre-fit RMSPE)"
+            )
+            perm = sc.get("permutation")
+            if perm:
+                # The CI is conditional on the fitted per-unit effects; the
+                # permutation p-value is the inference this design supports,
+                # and the two can disagree sharply. Report both.
+                note += (
+                    f"; CI conditional on fitted effects, Abadie permutation "
+                    f"p = {perm['combined']['p_value']:.2f} "
+                    f"({perm['n_significant_at_05']}/{perm['n_units']} units "
+                    "significant at 0.05)"
+                )
             add(
                 "Synthetic control\n(avg over adopters)",
                 sc["att"], sc["ci_lower"], sc["ci_upper"],
-                "native",
-                f"{sc['n_units']} adopters vs {sc['n_donors']} never-treated donors",
+                "conditional", note,
             )
         except Exception as exc:  # noqa: BLE001
             add("Synthetic control\n(avg over adopters)", np.nan, np.nan, np.nan,

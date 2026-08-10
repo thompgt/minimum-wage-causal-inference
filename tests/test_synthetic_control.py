@@ -9,6 +9,9 @@ import pandas as pd
 import pytest
 
 from src.methods.synthetic_control import (
+    DEFAULT_MAX_PRE_RMSPE_RATIO,
+    _fisher_combine,
+    aggregate_synthetic_control,
     estimate_synthetic_control,
     placebo_test,
     run_synthetic_control,
@@ -147,3 +150,128 @@ def test_flat_output_validates_columns():
 def test_flat_output_validates_treated_state_present():
     with pytest.raises(ValueError, match="not found in panel"):
         run_synthetic_control(make_panel(), "S99", TREAT_YEAR)
+
+
+# --- aggregation across adopters ------------------------------------------
+
+def make_staggered_panel(seed=11, n_donors=6, n_adopters=4, bad_fit_unit=True):
+    """Never-treated donors plus several staggered adopters.
+
+    One adopter (`BAD`) is deliberately unreproducible from the donor pool
+    — a large idiosyncratic wander — so the pre-RMSPE gate has something
+    to catch.
+    """
+    rng = np.random.default_rng(seed)
+    rows = []
+    donor_paths = {}
+    for i in range(n_donors):
+        path = 5 + rng.normal(0, 0.5) + np.cumsum(rng.normal(0, 0.2, len(YEARS)))
+        donor_paths[f"D{i}"] = path
+        for y, v in zip(YEARS, path, strict=True):
+            rows.append({"state": f"D{i}", "year": y, "unemployment_rate": v,
+                         "minimum_wage": 7.25, "adoption_year": pd.NA})
+
+    for a in range(n_adopters):
+        adoption = 2008 + 2 * a
+        mix = {"D0": 0.5, "D1": 0.3, "D2": 0.2}
+        path = sum(w * donor_paths[d] for d, w in mix.items())
+        path = path + 0.6 * (np.array(YEARS) >= adoption)
+        for y, v in zip(YEARS, path, strict=True):
+            rows.append({"state": f"A{a}", "year": y, "unemployment_rate": v,
+                         "minimum_wage": 9.0, "adoption_year": adoption})
+
+    if bad_fit_unit:
+        wander = 5 + np.cumsum(rng.normal(0, 2.5, len(YEARS)))
+        for y, v in zip(YEARS, wander, strict=True):
+            rows.append({"state": "BAD", "year": y, "unemployment_rate": v,
+                         "minimum_wage": 9.0, "adoption_year": 2012})
+
+    df = pd.DataFrame(rows)
+    df["adoption_year"] = df["adoption_year"].astype("Int64")
+    return df
+
+
+def test_aggregate_reports_the_prefit_gate_it_applied():
+    panel = make_staggered_panel()
+    res = aggregate_synthetic_control(panel, n_boot=100, permutation_inference=False)
+    assert res["n_fitted"] >= res["n_units"]
+    assert res["n_dropped_pre_rmspe"] == res["n_fitted"] - res["n_units"]
+    assert res["pre_rmspe_cutoff"] == pytest.approx(
+        DEFAULT_MAX_PRE_RMSPE_RATIO * res["median_pre_rmspe"]
+    )
+
+
+def test_prefit_gate_drops_a_unit_the_donors_cannot_reproduce():
+    panel = make_staggered_panel(bad_fit_unit=True)
+    res = aggregate_synthetic_control(panel, n_boot=100, permutation_inference=False)
+    assert "BAD" in res["dropped_units"]
+    assert res["n_dropped_pre_rmspe"] >= 1
+
+
+def test_prefit_gate_can_be_disabled():
+    panel = make_staggered_panel()
+    gated = aggregate_synthetic_control(panel, n_boot=100,
+                                        permutation_inference=False)
+    ungated = aggregate_synthetic_control(panel, n_boot=100,
+                                          max_pre_rmspe_ratio=None,
+                                          permutation_inference=False)
+    assert ungated["n_dropped_pre_rmspe"] == 0
+    assert ungated["n_units"] > gated["n_units"]
+    # A badly fitting unit contributes its fit error to the ATT, which is
+    # exactly why the gate exists.
+    assert ungated["att"] != gated["att"]
+
+
+def test_effects_table_marks_which_units_were_included():
+    panel = make_staggered_panel()
+    res = aggregate_synthetic_control(panel, n_boot=100, permutation_inference=False)
+    effects = res["effects"]
+    assert "included" in effects.columns
+    assert effects["included"].sum() == res["n_units"]
+    assert set(effects.loc[~effects["included"], "state"]) == set(res["dropped_units"])
+
+
+def test_ci_is_labelled_conditional():
+    """The interval ignores within-fit uncertainty; it must say so."""
+    panel = make_staggered_panel()
+    res = aggregate_synthetic_control(panel, n_boot=100, permutation_inference=False)
+    assert res["ci_kind"] == "conditional-on-fitted-effects"
+    assert "within-fit uncertainty" in res["ci_note"]
+    assert res["ci_lower"] < res["att"] < res["ci_upper"]
+
+
+def test_permutation_inference_runs_per_unit_and_combines():
+    panel = make_staggered_panel()
+    res = aggregate_synthetic_control(panel, n_boot=100, permutation_inference=True)
+    perm = res["permutation"]
+    assert perm is not None
+    assert perm["n_units"] == res["n_units"]
+    assert set(perm["per_unit"].columns) == {"state", "p_value"}
+    assert perm["per_unit"]["p_value"].between(0, 1).all()
+    assert 0.0 <= perm["combined"]["p_value"] <= 1.0
+    assert perm["combined"]["df"] == 2 * perm["n_units"]
+
+
+def test_permutation_inference_is_skippable():
+    panel = make_staggered_panel()
+    res = aggregate_synthetic_control(panel, n_boot=100, permutation_inference=False)
+    assert res["permutation"] is None
+
+
+def test_fisher_combine_is_uniform_on_a_single_pvalue():
+    """Fisher's method on one p-value returns that p-value back."""
+    for p in [0.01, 0.2, 0.5, 0.9]:
+        assert _fisher_combine([p])["p_value"] == pytest.approx(p, rel=1e-9)
+
+
+def test_fisher_combine_gets_smaller_as_evidence_accumulates():
+    one = _fisher_combine([0.05])["p_value"]
+    many = _fisher_combine([0.05] * 5)["p_value"]
+    assert many < one
+
+
+def test_aggregate_requires_never_treated_donors():
+    panel = make_staggered_panel()
+    panel["adoption_year"] = panel["adoption_year"].fillna(2005).astype("Int64")
+    with pytest.raises(ValueError, match="no never-treated units"):
+        aggregate_synthetic_control(panel, permutation_inference=False)
