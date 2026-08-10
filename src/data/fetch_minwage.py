@@ -22,6 +22,8 @@ from pathlib import Path
 import pandas as pd
 import requests
 
+from src.data.manifest import MANIFEST_PATH, write_manifest
+
 RAW_DIR = Path(__file__).resolve().parents[2] / "data" / "raw"
 INTERIM_DIR = Path(__file__).resolve().parents[2] / "data" / "interim"
 
@@ -192,6 +194,16 @@ def main():
         f"Wrote {len(out)} rows ({out['state'].nunique()} states, "
         f"{out['year'].min()}-{out['year'].max()}) to {out_path}"
     )
+
+    # Which of the two sources this was is not recoverable from the output.
+    user_csv = RAW_DIR / "state_minimum_wage.csv"
+    write_manifest(extra={"minimum_wage": {
+        "source": "user csv" if user_csv.exists() else f"Vaghul-Zipperer {VZ_URL}",
+        "start_year": int(out["year"].min()),
+        "end_year": int(out["year"].max()),
+        "n_states": int(out["state"].nunique()),
+    }})
+    print(f"Recorded data vintage in {MANIFEST_PATH.name}")
 
 
 if __name__ == "__main__":

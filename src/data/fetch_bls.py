@@ -24,6 +24,8 @@ import pandas as pd
 import requests
 from dotenv import load_dotenv
 
+from src.data.manifest import MANIFEST_PATH, write_manifest
+
 load_dotenv()
 
 RAW_DIR = Path(__file__).resolve().parents[2] / "data" / "raw"
@@ -187,6 +189,18 @@ def main():
     out_path = RAW_DIR / "bls_unemployment.parquet"
     out.to_parquet(out_path, index=False)
     print(f"Wrote {len(out)} rows ({out['state'].nunique()} states) to {out_path}")
+
+    # LAUS is revised and re-benchmarked, so the fetch date and API version
+    # are part of what the numbers mean. See src/data/manifest.py.
+    measures = [m for m in LAUS_MEASURES if m in out.columns]
+    write_manifest(extra={"bls": {
+        "api_version": 2 if key else 1,
+        "start_year": DEFAULT_START_YEAR,
+        "end_year": DEFAULT_END_YEAR,
+        "measures": measures,
+        "n_states": int(out["state"].nunique()),
+    }})
+    print(f"Recorded data vintage in {MANIFEST_PATH.name} (measures: {', '.join(measures)})")
 
 
 if __name__ == "__main__":

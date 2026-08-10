@@ -10,6 +10,8 @@ data/processed/*
 !data/raw/.gitkeep
 !data/interim/.gitkeep
 !data/processed/.gitkeep
+# Provenance, not data: which vintage of the raw inputs produced the results.
+!data/manifest.json
 .Rhistory
 .RData
 *.Rproj.user/

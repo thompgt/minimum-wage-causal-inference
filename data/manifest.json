@@ -1,0 +1,39 @@
+{
+  "bls": {
+    "api_version": 1,
+    "end_year": 2022,
+    "measures": [
+      "unemployment_rate",
+      "labor_force"
+    ],
+    "n_states": 51,
+    "start_year": 2000
+  },
+  "generated_utc": "2026-08-10T23:01:47+00:00",
+  "inputs": {
+    "bls_unemployment": {
+      "bytes": 110329,
+      "modified_utc": "2026-08-10T22:58:45+00:00",
+      "path": "data/raw/bls_unemployment.parquet",
+      "present": true,
+      "sha256": "d8a672e371b683c20e65b47a1ddf7985b1aab879e642f799eae1accfdabe27d2"
+    },
+    "user_minimum_wage_csv": {
+      "path": "data/raw/state_minimum_wage.csv",
+      "present": false
+    },
+    "vz_minimum_wage": {
+      "bytes": 1022044,
+      "modified_utc": "2026-07-26T01:22:57+00:00",
+      "path": "data/raw/vz_v1.4.0_mw_state_monthly.xlsx",
+      "present": true,
+      "sha256": "5176fbe0fe048378e405c83f4ec329f1268674909869cefd78880142fbadc13a"
+    }
+  },
+  "minimum_wage": {
+    "end_year": 2022,
+    "n_states": 51,
+    "source": "Vaghul-Zipperer https://github.com/benzipperer/historicalminwage/releases/download/v1.4.0/mw_state_excel.zip",
+    "start_year": 1974
+  }
+}
