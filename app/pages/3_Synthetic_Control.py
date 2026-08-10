@@ -8,7 +8,6 @@ _ROOT = next(p for p in Path(__file__).resolve().parents if (p / "src").is_dir()
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 

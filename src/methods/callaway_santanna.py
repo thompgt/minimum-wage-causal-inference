@@ -109,7 +109,7 @@ def _weights(G, cells, kind):
         masks = [post]
         w = n
     elif kind == "dynamic":
-        events = np.unique((ts - gs))
+        events = np.unique(ts - gs)
         labels = [float(e) for e in events]
         masks = [(ts - gs) == e for e in events]
         w = n

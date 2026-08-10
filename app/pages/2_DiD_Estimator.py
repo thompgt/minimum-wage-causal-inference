@@ -13,7 +13,7 @@ import streamlit as st
 
 from src.data.loader import load_state_year_panel
 from src.diagnostics.parallel_trends import pretrend_joint_test
-from src.methods.event_study import estimate_event_study
+from src.methods.event_study import average_post_effect, estimate_event_study
 from src.methods.twfe_did import estimate_twfe, summarize_twfe
 
 st.title("DiD Estimator")
@@ -45,7 +45,15 @@ else:
     min_lead = st.slider("Min lead (periods before treatment)", -8, -1, -5)
     max_lag = st.slider("Max lag (periods after treatment)", 1, 8, 5)
     try:
-        _, es_summary = estimate_event_study(panel, min_lead=min_lead, max_lag=max_lag)
+        es_result, es_summary = estimate_event_study(
+            panel, min_lead=min_lead, max_lag=max_lag
+        )
+        st.caption(
+            f"{es_summary.attrs['n_adopters']} staggered adopters against "
+            f"{es_summary.attrs['n_never_treated']} never-treated control states; "
+            f"{len(es_summary.attrs['always_treated_states'])} always-treated states "
+            "dropped (no pre-period)."
+        )
         fig = go.Figure()
         fig.add_trace(go.Scatter(
             x=es_summary["rel_time"], y=es_summary["coef"], mode="markers+lines",
@@ -65,14 +73,35 @@ else:
         )
         st.plotly_chart(fig, width='stretch')
 
-        pretrend = pretrend_joint_test(es_summary)
+        post = average_post_effect(es_result, es_summary)
+        st.metric(
+            "Average post-adoption effect (pp)",
+            f"{post['estimate']:+.3f}",
+            help="Linear contrast over the post-adoption coefficients, with a "
+                 "standard error that accounts for their covariance — not the "
+                 "average of their individual CI endpoints.",
+        )
+        st.caption(
+            f"95% CI [{post['ci_lower']:+.3f}, {post['ci_upper']:+.3f}], "
+            f"se {post['std_error']:.3f}, over {post['n_coefficients']} coefficients."
+        )
+
+        pretrend = pretrend_joint_test(es_result, es_summary)
+        screen = pretrend["individual_screen"]
         if pretrend["passes"]:
-            st.success("Pre-trend check: no significant pre-period coefficients.")
+            st.success(
+                f"Joint pre-trend Wald test over leads {pretrend['leads_tested']}: "
+                f"chi2({pretrend['df']}) = {pretrend['statistic']:.2f}, "
+                f"p = {pretrend['p_value']:.3f} — no detectable pre-trend. "
+                "Failing to reject is not evidence that parallel trends holds."
+            )
         else:
             st.warning(
-                f"Pre-trend check: significant coefficients at periods "
-                f"{pretrend['violating_periods']} — parallel trends assumption "
-                f"may be violated."
+                f"Joint pre-trend Wald test rejects: chi2({pretrend['df']}) = "
+                f"{pretrend['statistic']:.2f}, p = {pretrend['p_value']:.3f}. "
+                f"Individually significant leads: "
+                f"{screen['violating_periods'] or 'none'} — the leads are jointly "
+                "off even where no single one is."
             )
     except Exception as e:
         st.error(f"Event study failed: {e}")

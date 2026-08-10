@@ -5,13 +5,15 @@ import pandas as pd
 from src.diagnostics.robustness import DEFAULT_MAX_FAILURE_RATE, check_refit_failures
 
 
-def pretrend_joint_test(event_study_summary):
-    """Wald-style check: are pre-period event-study coefficients jointly ~0?
+def pretrend_individual_screen(event_study_summary):
+    """Per-coefficient screen: does any lead's own CI exclude zero?
 
-    Lightweight version using the reported per-coefficient CIs: flags any
-    pre-period (rel_time < 0) coefficient whose CI excludes zero. For a
-    formal joint F-test, refit with `statsmodels.stats.contrast` on the
-    full covariance matrix; this function is a quick screening pass.
+    This is a screening pass, not a test of parallel trends. Five
+    separately insignificant, individually low-powered leads are weak
+    evidence that the pre-trend is flat — the coefficients are correlated,
+    and failing to reject one at a time is not the same as failing to
+    reject them jointly. Use `pretrend_joint_test` for that; this function
+    is here to say *which* lead is the problem when the joint test fails.
     """
     pre = event_study_summary[event_study_summary["rel_time"] < 0]
     violations = pre[(pre["ci_lower"] > 0) | (pre["ci_upper"] < 0)]
@@ -20,6 +22,59 @@ def pretrend_joint_test(event_study_summary):
         "n_significant_violations": len(violations),
         "violating_periods": violations["rel_time"].tolist(),
         "passes": len(violations) == 0,
+    }
+
+
+def pretrend_joint_test(result, event_study_summary, alpha=0.05):
+    """Joint Wald test that every pre-adoption lead coefficient is zero.
+
+    The real thing: a restriction matrix with one row per lead, tested
+    against the fitted (state-clustered) covariance matrix, so the
+    correlation between the leads is accounted for. `passes` is
+    non-rejection of the null of no pre-trend — which is a failure to
+    find one, not evidence of its absence, and the returned dict carries
+    the individual screen alongside so a reader can see the power the
+    test actually had.
+
+    Takes the fitted result as well as the summary because the covariance
+    matrix is not recoverable from per-coefficient confidence intervals.
+    """
+    mapping = event_study_summary.attrs.get("col_to_reltime")
+    if not mapping:
+        raise ValueError(
+            "summary has no col_to_reltime in .attrs; it did not come from "
+            "src.methods.event_study.estimate_event_study"
+        )
+    lead_cols = sorted(
+        (col for col, t in mapping.items() if t < 0), key=lambda c: mapping[c]
+    )
+    if not lead_cols:
+        raise ValueError("the event study has no pre-adoption leads to test")
+
+    params = result.params
+    restriction = np.zeros((len(lead_cols), len(params)))
+    for row, col in enumerate(lead_cols):
+        restriction[row, params.index.get_loc(col)] = 1.0
+
+    test = result.wald_test(
+        restriction=pd.DataFrame(restriction, columns=params.index),
+        value=np.zeros(len(lead_cols)),
+    )
+    stat = float(test.stat)
+    p_value = float(test.pval)
+    screen = pretrend_individual_screen(event_study_summary)
+
+    return {
+        "statistic": stat,
+        "p_value": p_value,
+        "df": len(lead_cols),
+        "leads_tested": [mapping[c] for c in lead_cols],
+        "alpha": alpha,
+        # Non-rejection. Named `passes` for continuity with the callers, but
+        # read it as "no detectable pre-trend at this power", not "parallel
+        # trends holds".
+        "passes": p_value > alpha,
+        "individual_screen": screen,
     }
 
 
@@ -103,8 +158,13 @@ if __name__ == "__main__":
     from src.methods.twfe_did import estimate_twfe
 
     panel = generate_state_year_panel()
-    _, summary = estimate_event_study(panel)
-    print(pretrend_joint_test(summary))
+    es_result, summary = estimate_event_study(panel)
+    joint = pretrend_joint_test(es_result, summary)
+    print(
+        f"joint pre-trend Wald: chi2({joint['df']}) = {joint['statistic']:.2f}, "
+        f"p = {joint['p_value']:.3f}, no detectable pre-trend: {joint['passes']}"
+    )
+    print(f"individual screen: {joint['individual_screen']}")
 
     real_result = estimate_twfe(panel)
     real_coef = real_result.params["log_minimum_wage"]
