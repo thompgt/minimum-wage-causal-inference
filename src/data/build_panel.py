@@ -18,6 +18,25 @@ attribute federal policy changes to state cohorts.
 States already above the federal floor in the panel's first year are
 always-treated: they have no clean pre-period, so `adoption_year` is set to
 the first panel year and estimators that need a pre-period drop them.
+
+Annual aggregation convention
+-----------------------------
+Collapsing months to years forces a choice, and the annual wage and the
+annual treatment flag have to make the *same* one. This module takes the
+minimum wage as of **year end** (`last`), so `above_federal` is derived
+from the annual wage columns rather than aggregated separately. The
+earlier code took `last` for the wage but `any` for the flag, which let a
+state be recorded as treated in a row whose own `minimum_wage` equals
+`federal_minimum_wage` — and because treatment is absorbing, one such
+month propagated forward forever. On the 2000-2022 panel the two
+conventions disagree in 23 state-years: Kentucky was above the federal
+floor for part of 2007 only and so counted as an adopter for 16 years
+without ever ending a year above it, and New Mexico's adoption year moved
+from 2008 to 2009.
+
+`treatment_convention="any-month"` restores the old behaviour for anyone
+who wants to test sensitivity to the choice; `build_state_year_panel`
+records which one produced a panel in `panel.attrs["treatment_convention"]`.
 """
 from pathlib import Path
 
@@ -69,20 +88,51 @@ def build_state_month_panel(unemployment_path=None, minwage_path=None):
     return panel
 
 
-def build_state_year_panel(state_month_panel):
+#: How a year's treatment status is read off its twelve months.
+TREATMENT_CONVENTIONS = ("year-end", "any-month")
+
+
+def build_state_year_panel(state_month_panel, treatment_convention="year-end"):
+    """Collapse a state-month panel to state-years, then derive adoption.
+
+    See the module docstring on `treatment_convention`. The default,
+    `"year-end"`, derives `above_federal` from the annual (year-end) wage
+    columns, so no row can claim treatment while its own wage sits at the
+    federal floor. `"any-month"` flags a year treated if the state was
+    above the floor in any month of it.
+    """
+    if treatment_convention not in TREATMENT_CONVENTIONS:
+        raise ValueError(
+            f"unknown treatment_convention {treatment_convention!r}; "
+            f"expected one of {TREATMENT_CONVENTIONS}"
+        )
+
     yearly = (
-        state_month_panel.groupby(["state", "year"])
+        state_month_panel.sort_values(["state", "year", "month"])
+        .groupby(["state", "year"])
         .agg(
             unemployment_rate=("unemployment_rate", "mean"),
             minimum_wage=("minimum_wage", "last"),  # year-end minimum wage
             federal_minimum_wage=("federal_minimum_wage", "last"),
-            above_federal=("above_federal", "any"),
+            above_federal_any_month=("above_federal", "any"),
         )
         .reset_index()
     )
+    if treatment_convention == "year-end":
+        # Derived from the same two columns the row reports, so the flag and
+        # the wage cannot contradict each other. Same half-cent tolerance.
+        yearly["above_federal"] = (
+            yearly["minimum_wage"] > yearly["federal_minimum_wage"] + CENT_TOLERANCE
+        )
+    else:
+        yearly["above_federal"] = yearly["above_federal_any_month"]
+    yearly = yearly.drop(columns="above_federal_any_month")
+
     yearly["log_minimum_wage"] = _log_wage(yearly["minimum_wage"])
     yearly = yearly.sort_values(["state", "year"]).reset_index(drop=True)
-    return add_adoption_year(yearly)
+    out = add_adoption_year(yearly)
+    out.attrs["treatment_convention"] = treatment_convention
+    return out
 
 
 def add_adoption_year(panel):
@@ -139,7 +189,8 @@ def main():
     year_panel.to_parquet(PROCESSED_DIR / "panel_state_year.parquet", index=False)
     print(
         f"Wrote {len(month_panel)} state-month rows and {len(year_panel)} "
-        f"state-year rows ({year_panel['year'].min()}-{year_panel['year'].max()})"
+        f"state-year rows ({year_panel['year'].min()}-{year_panel['year'].max()}), "
+        f"treatment read {year_panel.attrs['treatment_convention']}"
     )
 
     cohorts, never = summarize_cohorts(year_panel)
