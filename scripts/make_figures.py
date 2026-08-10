@@ -143,7 +143,11 @@ def fig_method_comparison(panel, is_synthetic=False):
     fig, ax = plt.subplots(figsize=(8.5, 4.6))
     y = np.arange(len(df))[::-1]
     ax.axvline(0, color="#c3c2b7", linewidth=1)
-    colors = [C_ACCENT if s == "converted" else C_TREATED for s in df["scale"]]
+    # Three kinds of row, three colours. `conditional` is the synthetic
+    # control: its interval is conditional on the fitted per-unit effects,
+    # so it is not comparable to the others and must not read as if it were.
+    scale_color = {"converted": C_ACCENT, "conditional": C_CONTROL}
+    colors = [scale_color.get(s, C_TREATED) for s in df["scale"]]
     for yi, row, color in zip(y, df.itertuples(), colors, strict=False):
         ax.errorbar(row.estimate, yi,
                     xerr=[[row.estimate - row.ci_lower], [row.ci_upper - row.estimate]],
@@ -162,16 +166,19 @@ def fig_method_comparison(panel, is_synthetic=False):
                    label="Binary treatment (native scale)"),
         plt.Line2D([], [], color=C_ACCENT, marker="o", linestyle="",
                    label=f"Semi-elasticity x {factor:.3f} (converted)"),
+        plt.Line2D([], [], color=C_CONTROL, marker="o", linestyle="",
+                   label="CI conditional on fitted effects"),
     ]
     # Below the axes: every in-axes corner collides with one CI or another.
     ax.legend(handles=handles, frameon=False, fontsize=8.5, labelcolor=INK,
               loc="upper center", bbox_to_anchor=(0.5, -0.16), ncol=2)
 
     if is_synthetic:
+        # Not C_CONTROL: that now marks the conditional-CI row.
         truth = TRUE_EFFECT * factor
-        ax.axvline(truth, color=C_CONTROL, linewidth=2, linestyle="--")
+        ax.axvline(truth, color=INK, linewidth=2, linestyle="--")
         ax.annotate(f"ground truth ({truth:+.2f})", (truth, len(df) - 0.5),
-                    color=C_CONTROL, fontsize=8, ha="center",
+                    color=INK, fontsize=8, ha="center",
                     xytext=(0, 4), textcoords="offset points")
 
     _style(ax, "Effect of state minimum wage policy on unemployment, by method\n"
