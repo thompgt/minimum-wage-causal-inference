@@ -110,6 +110,15 @@ def test_pretrend_joint_test_carries_the_individual_screen(panel):
     assert screen["n_pre_periods"] > 0
 
 
+def test_the_screen_does_not_count_the_omitted_reference_period(panel):
+    """It is a normalised zero, not an estimate; counting it would make the
+    screen and the joint test disagree on how many leads there are."""
+    result, summary = estimate_event_study(panel)
+    joint = pretrend_joint_test(result, summary)
+    assert summary.attrs["omit"] not in joint["individual_screen"]["violating_periods"]
+    assert joint["individual_screen"]["n_pre_periods"] == joint["df"]
+
+
 def test_pretrend_joint_test_needs_the_fitted_result(panel):
     """A summary alone cannot carry a covariance matrix, so it must not pass."""
     _, summary = estimate_event_study(panel)

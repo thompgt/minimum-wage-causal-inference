@@ -15,7 +15,14 @@ def pretrend_individual_screen(event_study_summary):
     reject them jointly. Use `pretrend_joint_test` for that; this function
     is here to say *which* lead is the problem when the joint test fails.
     """
+    # The omitted reference period is in the summary as a normalised zero,
+    # not an estimate. Counting it inflates `n_pre_periods` past the number
+    # of leads the joint test uses, which reads as a disagreement between
+    # the two diagnostics when there is none.
+    omit = event_study_summary.attrs.get("omit")
     pre = event_study_summary[event_study_summary["rel_time"] < 0]
+    if omit is not None:
+        pre = pre[pre["rel_time"] != omit]
     violations = pre[(pre["ci_lower"] > 0) | (pre["ci_upper"] < 0)]
     return {
         "n_pre_periods": len(pre),
