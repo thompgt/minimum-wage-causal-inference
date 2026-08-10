@@ -56,7 +56,10 @@ st.markdown(
     "answer that same question: TWFE and the border design regress on log "
     f"minimum wage, so their semi-elasticities are multiplied by {factor:.3f}, "
     "the average log gap between the state and federal minimum among treated "
-    "state-years. The `scale` column records which rows rest on that step."
+    "state-years. The `scale` column records which rows rest on that step — "
+    "and flags the synthetic control's interval as `conditional`, because it "
+    "is conditional on the fitted per-unit effects rather than on the "
+    "permutation inference the design actually supports (see the note)."
 )
 
 failed = comparison[comparison["scale"] == "failed"]
@@ -75,15 +78,30 @@ st.dataframe(
     hide_index=True,
 )
 
+# One trace per scale, and every scale `comparison.py` can emit needs an
+# entry: a scale missing from here is a row silently absent from the plot
+# while still present in the table above.
+SCALE_TRACES = (
+    ("native", "#3b6ea5", "Binary treatment (native scale)"),
+    ("converted", "#c4703a", f"Semi-elasticity x {factor:.3f} (converted)"),
+    ("conditional", "#7a4fbf", "CI conditional on fitted effects"),
+)
+plotted = {scale for scale, _, _ in SCALE_TRACES}
+missing = sorted(set(results["scale"]) - plotted)
+if missing:
+    st.warning(
+        f"Rows with scale {missing} are in the table but not the plot; "
+        "add them to SCALE_TRACES."
+    )
+
 fig = go.Figure()
-for scale, color in (("native", "#3b6ea5"), ("converted", "#c4703a")):
+for scale, color, label in SCALE_TRACES:
     subset = results[results["scale"] == scale]
     if subset.empty:
         continue
     fig.add_trace(go.Scatter(
         x=subset["estimate"], y=subset["method"], mode="markers",
-        name="Binary treatment (native scale)" if scale == "native"
-        else f"Semi-elasticity x {factor:.3f} (converted)",
+        name=label,
         error_x=dict(
             type="data",
             array=subset["ci_upper"] - subset["estimate"],
