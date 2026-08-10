@@ -1,4 +1,3 @@
-import numpy as np
 
 from src.data.synthetic import STATES, YEARS, generate_panel, generate_state_year_panel
 

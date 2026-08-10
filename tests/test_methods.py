@@ -1,6 +1,6 @@
 import pytest
 
-from src.data.synthetic import generate_state_year_panel, TRUE_EFFECT
+from src.data.synthetic import generate_state_year_panel
 from src.diagnostics.parallel_trends import pretrend_joint_test
 from src.methods.event_study import estimate_event_study
 from src.methods.twfe_did import estimate_twfe, summarize_twfe

@@ -4,8 +4,8 @@ Standard errors clustered by state, the conventional choice for
 state-by-year panels with serially correlated treatment assignment
 (Bertrand, Duflo & Mullainathan 2004).
 """
-from linearmodels.panel import PanelOLS
 import pandas as pd
+from linearmodels.panel import PanelOLS
 
 
 def estimate_twfe(panel, outcome="unemployment_rate", treatment="log_minimum_wage"):

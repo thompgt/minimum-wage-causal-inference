@@ -80,7 +80,7 @@ if __name__ == "__main__":
     # Synthetic states (S01..S20) have no real geography, so build
     # arbitrary "border" pairs for demonstration purposes only.
     states = sorted(panel["state"].unique())
-    demo_pairs = list(zip(states[::2], states[1::2]))
+    demo_pairs = list(zip(states[::2], states[1::2], strict=False))
 
     diffs = border_pair_diffs(panel, demo_pairs)
     print(diffs.head())

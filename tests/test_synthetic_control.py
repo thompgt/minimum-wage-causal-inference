@@ -32,10 +32,10 @@ def make_panel(shock=0.0, n_donors=6, seed=0, mix=None):
 
     rows = []
     for name, path in donor_paths.items():
-        for y, v in zip(YEARS, path):
+        for y, v in zip(YEARS, path, strict=True):
             rows.append({"state": name, "year": y, "unemployment_rate": v,
                          "minimum_wage": 7.25})
-    for y, v in zip(YEARS, treated):
+    for y, v in zip(YEARS, treated, strict=True):
         rows.append({"state": "T", "year": y, "unemployment_rate": v,
                      "minimum_wage": 8.5})
     return pd.DataFrame(rows)

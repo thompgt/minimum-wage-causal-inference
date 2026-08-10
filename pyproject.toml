@@ -59,3 +59,8 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["B011"]
+# Streamlit pages bootstrap sys.path before importing src, so their imports
+# genuinely cannot be at the top, and a page that raises must show the error
+# rather than propagate it into the Streamlit runtime.
+"app/*" = ["E402", "BLE001"]
+"scripts/*" = ["BLE001"]

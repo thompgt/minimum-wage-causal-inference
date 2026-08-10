@@ -5,7 +5,6 @@ Regresses unemployment on a set of relative-time-to-treatment dummies plus
 state and year fixed effects, letting pre-treatment coefficients serve as
 a visual/statistical parallel-trends check.
 """
-import numpy as np
 import pandas as pd
 from linearmodels.panel import PanelOLS
 

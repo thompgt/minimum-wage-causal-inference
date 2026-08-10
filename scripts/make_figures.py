@@ -15,7 +15,6 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
 
 from src.data.loader import load_state_year_panel
 from src.data.synthetic import TRUE_EFFECT
@@ -145,7 +144,7 @@ def fig_method_comparison(panel, is_synthetic=False):
     y = np.arange(len(df))[::-1]
     ax.axvline(0, color="#c3c2b7", linewidth=1)
     colors = [C_ACCENT if s == "converted" else C_TREATED for s in df["scale"]]
-    for yi, row, color in zip(y, df.itertuples(), colors):
+    for yi, row, color in zip(y, df.itertuples(), colors, strict=False):
         ax.errorbar(row.estimate, yi,
                     xerr=[[row.estimate - row.ci_lower], [row.ci_upper - row.estimate]],
                     fmt="o", markersize=8, color=color, ecolor=color,
